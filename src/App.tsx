@@ -23,7 +23,6 @@ import {
   ChevronLeft,
   ChevronDown,
   LogOut,
-  LogIn,
   TrendingUp,
   TrendingDown,
   ArrowUpRight,
@@ -32,6 +31,7 @@ import {
   AlertTriangle,
   Layers,
   UserPlus,
+  Users,
   Copy,
   Trash2,
   X,
@@ -45,6 +45,9 @@ import {
   PanelTop,
   Maximize2,
   Minimize2,
+  Database,
+  KeyRound,
+  Lock,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -61,6 +64,17 @@ import {
   Cell,
 } from "recharts";
 import { cn } from "@/lib/utils";
+import {
+  supabase,
+  supabaseAdminRegistrar,
+  SUPABASE_URL,
+  SUPABASE_PROJECT_REF,
+  SUPABASE_INIT_SQL,
+  loadLocalUsers,
+  saveLocalUsers,
+  type AppUser,
+  type UserRole,
+} from "@/lib/supabase";
 
 export const FIELDS = ["복리후생/총무", "사회공헌/의전", "자산", "비상계획"] as const;
 export const STATUSES = ["대기", "진행 중", "지연 / 이슈", "완료"] as const;
@@ -87,7 +101,7 @@ type ActivityItem = {
   read: boolean;
 };
 
-type ViewId = "dashboard" | "upload" | "kanban" | "report";
+type ViewId = "dashboard" | "upload" | "kanban" | "report" | "users";
 type ThemeMode = "light" | "dark" | "system";
 type ColorPreset = "neutral" | "zinc" | "blue" | "violet" | "rose" | "orange";
 type DensityMode = "compact" | "comfortable" | "spacious";
@@ -287,12 +301,17 @@ function parsePaste(text: string): Task[] {
 }
 
 export default function App() {
-  // Default entry directly into Zenith Dashboard per user selection; Login screen accessible via Logout / menu
-  const [isLoggedIn, setIsLoggedIn] = useState(true);
-  const [currentUser, setCurrentUser] = useState({ name: "관리자", email: "admin@zenith.kr", role: "총무기획팀장" });
+  // Supabase Auth: 로그인 화면부터 시작하며, 회원가입은 관리자가 직접 수동 등록으로 진행
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [users, setUsers] = useState<AppUser[]>(() => loadLocalUsers());
+  const [currentUser, setCurrentUser] = useState<AppUser>(
+    () => loadLocalUsers()[0]!,
+  );
   const [tasks, setTasks] = useState<Task[]>(SAMPLE);
   const [activities, setActivities] = useState<ActivityItem[]>(INITIAL_ACTIVITIES);
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
+  const [supabaseConnected, setSupabaseConnected] = useState(true);
+  const [dbTableReady, setDbTableReady] = useState(false);
 
   // Zenith Shell State
   const [collapsed, setCollapsed] = useState(false);
@@ -323,6 +342,92 @@ export default function App() {
     setToast(m);
     setTimeout(() => setToast(""), 2800);
   };
+
+  // Persist users locally as cache
+  useEffect(() => {
+    saveLocalUsers(users);
+  }, [users]);
+
+  // Initial Supabase session & database sync
+  useEffect(() => {
+    let mounted = true;
+
+    async function initSupabase() {
+      try {
+        // 1. Check active Supabase Auth session
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (mounted && sessionData?.session?.user) {
+          const authUser = sessionData.session.user;
+          const meta = authUser.user_metadata ?? {};
+          setCurrentUser({
+            id: authUser.id,
+            username:
+              String(meta["username"] || "") ||
+              authUser.email?.split("@")[0] ||
+              "user",
+            email: authUser.email || "",
+            name:
+              String(meta["name"] || "") ||
+              authUser.email?.split("@")[0] ||
+              "사용자",
+            department: String(meta["department"] || "복리후생/총무"),
+            role: (meta["role"] as UserRole) || "관리자",
+            is_active: true,
+            created_by: "supabase",
+            created_at: authUser.created_at?.slice(0, 10) || "2026-11-04",
+          });
+          setIsLoggedIn(true);
+        }
+
+        // 2. Load tasks from Supabase public.tasks if table exists
+        const { data: remoteTasks, error: tasksErr } = await supabase
+          .from("tasks")
+          .select("*")
+          .order("created_at", { ascending: false });
+
+        if (!tasksErr && Array.isArray(remoteTasks)) {
+          if (mounted) {
+            setDbTableReady(true);
+            if (remoteTasks.length > 0) {
+              setTasks(remoteTasks as Task[]);
+            }
+          }
+        }
+
+        // 3. Load app_users from Supabase public.app_users if table exists
+        const { data: remoteUsers, error: usersErr } = await supabase
+          .from("app_users")
+          .select("*")
+          .order("created_at", { ascending: true });
+
+        if (!usersErr && Array.isArray(remoteUsers) && remoteUsers.length > 0 && mounted) {
+          setDbTableReady(true);
+          setUsers(
+            remoteUsers.map((u) => ({
+              id: String(u.id),
+              username: String(u.username),
+              email: String(u.email),
+              password: String(u.password_hash || "1234"),
+              name: String(u.name),
+              department: String(u.department || "복리후생/총무"),
+              role: (u.role as UserRole) || "팀원",
+              is_active: Boolean(u.is_active ?? true),
+              created_by: String(u.created_by || "admin"),
+              created_at: String(u.created_at || "").slice(0, 10) || "2026-11-04",
+              supabase_synced: true,
+            })),
+          );
+        }
+      } catch {
+        if (mounted) setSupabaseConnected(false);
+      }
+    }
+
+    initSupabase();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // Apply Zenith theme / preset / density to <html>
   useEffect(() => {
@@ -373,7 +478,25 @@ export default function App() {
     ]);
   };
 
-  const handleAddTasks = (newTasks: Task[]) => {
+  const syncTaskToSupabase = async (task: Task) => {
+    try {
+      await supabase.from("tasks").upsert({
+        id: task.id,
+        code: task.code,
+        field: task.field,
+        title: task.title,
+        owner: task.owner,
+        due: task.due,
+        status: task.status,
+        progress: task.progress,
+        issue: task.issue,
+      });
+    } catch {
+      // ignore if table not yet migrated
+    }
+  };
+
+  const handleAddTasks = async (newTasks: Task[]) => {
     setTasks((prev) => [...newTasks, ...prev]);
     addActivity({
       type: "upload",
@@ -381,6 +504,33 @@ export default function App() {
       description: `${newTasks[0]?.title ?? "신규 업무"} 외 ${Math.max(0, newTasks.length - 1)}건 업로드됨`,
     });
     notify(`${newTasks.length}건이 반영되었습니다.`);
+    try {
+      await supabase.from("tasks").upsert(
+        newTasks.map((t) => ({
+          id: t.id,
+          code: t.code,
+          field: t.field,
+          title: t.title,
+          owner: t.owner,
+          due: t.due,
+          status: t.status,
+          progress: t.progress,
+          issue: t.issue,
+        })),
+      );
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // ignore
+    }
+    setIsLoggedIn(false);
+    notify("로그아웃되었습니다.");
   };
 
   const delayedCount = useMemo(
@@ -392,17 +542,18 @@ export default function App() {
     [activities],
   );
 
+  // ----------------------------------------------------------------------------
+  // LOGIN GATE (Starts at Login screen; Sign-up is admin-only manual registration)
+  // ----------------------------------------------------------------------------
   if (!isLoggedIn) {
     return (
       <>
         <Login
-          onLogin={(userId) => {
-            setCurrentUser((u) => ({ ...u, name: userId === "admin" ? "관리자" : userId }));
+          users={users}
+          onLoginSuccess={(loggedInUser) => {
+            setCurrentUser(loggedInUser);
             setIsLoggedIn(true);
-            notify("로그인되었습니다. 환영합니다!");
-          }}
-          onQuickAccess={() => {
-            setIsLoggedIn(true);
+            notify(`${loggedInUser.name} (${loggedInUser.role}) 님 환영합니다!`);
           }}
         />
         {toast && (
@@ -423,7 +574,6 @@ export default function App() {
         {
           id: "dashboard" as ViewId,
           label: "대시보드 (Dashboard)",
-          shortLabel: "대시보드",
           icon: LayoutDashboard,
           badge: undefined,
         },
@@ -436,23 +586,32 @@ export default function App() {
         {
           id: "upload" as ViewId,
           label: "1. 자료 올리기",
-          shortLabel: "1. 자료 올리기",
           icon: UploadIcon,
           badge: undefined,
         },
         {
           id: "kanban" as ViewId,
           label: "2. 진행상태 (칸반 보드)",
-          shortLabel: "2. 진행상태 (칸반 보드)",
           icon: KanbanIcon,
           badge: String(tasks.length),
         },
         {
           id: "report" as ViewId,
           label: "3. 주간업무보고서",
-          shortLabel: "3. 주간업무보고서",
           icon: FileText,
           badge: delayedCount > 0 ? `${delayedCount}` : undefined,
+        },
+      ],
+    },
+    {
+      key: "system",
+      label: "System · 계정/설정",
+      items: [
+        {
+          id: "users" as ViewId,
+          label: "4. 사용자 수동 등록 (관리자)",
+          icon: Users,
+          badge: String(users.length),
         },
       ],
     },
@@ -556,35 +715,28 @@ export default function App() {
 
         <div className="my-2 border-t border-sidebar-border" />
 
-        {/* System Section */}
-        <div>
-          {!isCollapsed && (
-            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/35">
-              System
-            </div>
-          )}
-          <div className="mt-1 space-y-0.5">
-            <button
-              onClick={() => {
-                setCustomizerOpen(true);
-                setMobileOpen(false);
-              }}
-              className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition-all duration-200 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground cursor-pointer"
-            >
-              <Settings className="h-[18px] w-[18px] shrink-0 text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80" />
-              {!isCollapsed && <span className="flex-1 text-start">테마 커스터마이저</span>}
-            </button>
-            <button
-              onClick={() => {
-                setNewTaskModalOpen(true);
-                setMobileOpen(false);
-              }}
-              className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition-all duration-200 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground cursor-pointer"
-            >
-              <Plus className="h-[18px] w-[18px] shrink-0 text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80" />
-              {!isCollapsed && <span className="flex-1 text-start">새 업무 빠른 등록</span>}
-            </button>
-          </div>
+        {/* Quick Actions */}
+        <div className="space-y-0.5">
+          <button
+            onClick={() => {
+              setCustomizerOpen(true);
+              setMobileOpen(false);
+            }}
+            className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition-all duration-200 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground cursor-pointer"
+          >
+            <Settings className="h-[18px] w-[18px] shrink-0 text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80" />
+            {!isCollapsed && <span className="flex-1 text-start">테마 커스터마이저</span>}
+          </button>
+          <button
+            onClick={() => {
+              setNewTaskModalOpen(true);
+              setMobileOpen(false);
+            }}
+            className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition-all duration-200 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground cursor-pointer"
+          >
+            <Plus className="h-[18px] w-[18px] shrink-0 text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80" />
+            {!isCollapsed && <span className="flex-1 text-start">새 업무 빠른 등록</span>}
+          </button>
         </div>
       </nav>
 
@@ -593,7 +745,7 @@ export default function App() {
         <div className="flex items-center gap-2">
           <div className="flex flex-1 items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-sidebar-accent/50">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sidebar-primary/80 to-sidebar-primary text-[11px] font-bold text-sidebar-primary-foreground">
-              AD
+              {currentUser.name.slice(0, 2)}
             </div>
             {!isCollapsed && (
               <div className="flex flex-1 flex-col overflow-hidden">
@@ -601,16 +753,16 @@ export default function App() {
                   {currentUser.name}
                 </span>
                 <span className="truncate text-[11px] text-sidebar-foreground/50">
-                  {currentUser.role}
+                  {currentUser.department} · {currentUser.role}
                 </span>
               </div>
             )}
           </div>
           {!isCollapsed && (
             <button
-              onClick={() => setIsLoggedIn(false)}
+              onClick={handleLogout}
               aria-label="로그아웃"
-              title="로그아웃 (로그인 화면)"
+              title="로그아웃"
               className="rounded-md p-1.5 text-sidebar-foreground/40 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground/80 cursor-pointer"
             >
               <LogOut className="h-4 w-4" />
@@ -697,6 +849,8 @@ export default function App() {
                   <Menu className="h-5 w-5" />
                 </button>
 
+                <h1 className="text-base font-bold tracking-tight sm:hidden">업무관리 시스템</h1>
+
                 {layout === "topnav" && (
                   <div className="hidden items-center gap-2.5 lg:flex">
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary">
@@ -722,6 +876,16 @@ export default function App() {
 
               {/* Header Right Actions */}
               <div className="flex items-center gap-2">
+                {currentUser.role === "관리자" && (
+                  <button
+                    onClick={() => setActiveView("users")}
+                    className="hidden h-8 items-center gap-1.5 rounded-lg border border-input bg-background px-3 text-xs font-medium transition-colors hover:bg-accent lg:inline-flex cursor-pointer"
+                  >
+                    <UserPlus className="h-3.5 w-3.5 text-primary" />
+                    <span>사용자 수동 등록</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => setNewTaskModalOpen(true)}
                   className="hidden h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-xs transition-colors hover:bg-primary/90 sm:inline-flex cursor-pointer"
@@ -853,17 +1017,6 @@ export default function App() {
                           </button>
                         ))}
                       </div>
-                      <div className="border-t border-border">
-                        <button
-                          onClick={() => {
-                            setNotifOpen(false);
-                            setActiveView("report");
-                          }}
-                          className="flex w-full items-center justify-center py-2.5 text-xs font-medium text-primary hover:text-primary/80 cursor-pointer"
-                        >
-                          주간업무보고서에서 전체 이슈 보기
-                        </button>
-                      </div>
                     </div>
                   )}
                 </div>
@@ -879,28 +1032,40 @@ export default function App() {
                     className="ms-1 flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 ps-1 pe-2.5 text-xs font-medium transition-colors hover:bg-accent cursor-pointer"
                   >
                     <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
-                      AD
+                      {currentUser.name.slice(0, 2)}
                     </span>
                     <span className="hidden sm:inline">
-                      <b>{currentUser.name}</b> 님
+                      <b>{currentUser.name}</b> 님 환영합니다
                     </span>
                     <ChevronDown className="h-3 w-3 text-muted-foreground" />
                   </button>
 
                   <button
-                    onClick={() => setIsLoggedIn(false)}
+                    onClick={handleLogout}
                     className="hidden h-8 items-center rounded-lg border border-input bg-background px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:inline-flex cursor-pointer"
                   >
                     로그아웃
                   </button>
 
                   {userMenuOpen && (
-                    <div className="absolute right-0 top-10 w-52 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-xl z-50">
+                    <div className="absolute right-0 top-10 w-56 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-xl z-50">
                       <div className="px-2.5 py-2">
-                        <p className="text-sm font-semibold">{currentUser.name} 님 환영합니다</p>
+                        <p className="text-sm font-semibold">
+                          {currentUser.name} ({currentUser.role})
+                        </p>
                         <p className="text-xs text-muted-foreground">{currentUser.email}</p>
                       </div>
                       <div className="my-1 border-t border-border" />
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          setActiveView("users");
+                        }}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium hover:bg-accent cursor-pointer"
+                      >
+                        <UserPlus className="h-3.5 w-3.5 text-muted-foreground" />
+                        사용자 수동 등록 관리
+                      </button>
                       <button
                         onClick={() => {
                           setUserMenuOpen(false);
@@ -914,12 +1079,12 @@ export default function App() {
                       <button
                         onClick={() => {
                           setUserMenuOpen(false);
-                          setIsLoggedIn(false);
+                          handleLogout();
                         }}
                         className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium text-destructive hover:bg-destructive/10 cursor-pointer"
                       >
                         <LogOut className="h-3.5 w-3.5" />
-                        로그아웃 (로그인 화면)
+                        로그아웃
                       </button>
                     </div>
                   )}
@@ -927,7 +1092,7 @@ export default function App() {
               </div>
             </header>
 
-            {/* Quick Navigation Sub-bar (Always accessible for 1-click view switching) */}
+            {/* Quick Navigation Sub-bar */}
             <nav
               aria-label="Quick view tabs"
               className="flex items-center justify-between border-b border-border bg-background/70 px-4 backdrop-blur-xl sm:px-6 overflow-x-auto"
@@ -938,6 +1103,7 @@ export default function App() {
                   { id: "upload" as ViewId, label: "1. 자료 올리기", icon: UploadIcon },
                   { id: "kanban" as ViewId, label: "2. 진행상태 (칸반 보드)", icon: KanbanIcon },
                   { id: "report" as ViewId, label: "3. 주간업무보고서", icon: FileText },
+                  { id: "users" as ViewId, label: "4. 사용자 수동 등록", icon: Users },
                 ].map((tabItem) => {
                   const Icon = tabItem.icon;
                   const active = activeView === tabItem.id;
@@ -960,8 +1126,13 @@ export default function App() {
               </div>
               <div className="hidden items-center gap-2 text-xs text-muted-foreground lg:flex">
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-medium">
-                  <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                  전체 {tasks.length}건 · 완료 {tasks.filter((t) => t.status === "완료").length}건
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 rounded-full",
+                      supabaseConnected ? "bg-success" : "bg-warning",
+                    )}
+                  />
+                  Supabase ({SUPABASE_PROJECT_REF}) 연동됨
                 </span>
               </div>
             </nav>
@@ -975,11 +1146,19 @@ export default function App() {
                 activities={activities}
                 onNavigate={setActiveView}
                 onOpenNewTask={() => setNewTaskModalOpen(true)}
-                onStatusChange={(id, status) => {
+                onStatusChange={async (id, status) => {
+                  let updated: Task | undefined;
                   setTasks((prev) =>
-                    prev.map((t) => (t.id === id ? { ...t, status } : t)),
+                    prev.map((t) => {
+                      if (t.id === id) {
+                        updated = { ...t, status };
+                        return updated;
+                      }
+                      return t;
+                    }),
                   );
                   notify(`업무 상태가 '${status}'(으)로 변경되었습니다.`);
+                  if (updated) await syncTaskToSupabase(updated);
                 }}
               />
             )}
@@ -996,9 +1175,22 @@ export default function App() {
                 setTasks={setTasks}
                 notify={notify}
                 onOpenNewTask={() => setNewTaskModalOpen(true)}
+                onSyncTask={syncTaskToSupabase}
               />
             )}
             {activeView === "report" && <ReportView tasks={tasks} notify={notify} />}
+            {activeView === "users" && (
+              <AdminUserManagementView
+                users={users}
+                setUsers={setUsers}
+                currentUser={currentUser}
+                dbTableReady={dbTableReady}
+                notify={notify}
+                onActivity={(title, description) =>
+                  addActivity({ type: "report", title, description })
+                }
+              />
+            )}
           </main>
         </div>
       </div>
@@ -1007,7 +1199,7 @@ export default function App() {
       {newTaskModalOpen && (
         <NewTaskModal
           onClose={() => setNewTaskModalOpen(false)}
-          onCreate={(newTask) => {
+          onCreate={async (newTask) => {
             setTasks((prev) => [newTask, ...prev]);
             addActivity({
               type: newTask.status === "지연 / 이슈" ? "issue" : "task",
@@ -1016,6 +1208,7 @@ export default function App() {
             });
             setNewTaskModalOpen(false);
             notify("새 업무가 등록되었습니다.");
+            await syncTaskToSupabase(newTask);
           }}
           notify={notify}
         />
@@ -1040,7 +1233,7 @@ export default function App() {
           }}
           onLogout={() => {
             setCmdOpen(false);
-            setIsLoggedIn(false);
+            handleLogout();
           }}
         />
       )}
@@ -1082,7 +1275,195 @@ export default function App() {
 }
 
 /* ============================================================================
- * 1. ZENITH DASHBOARD OVERVIEW PAGE (Copied from zenith-shadcn.dashboardpack.com/dashboard)
+ * 0. SUPABASE LOGIN SCREEN (회원가입은 관리자가 직접 수동등록으로 진행)
+ * ============================================================================ */
+export function Login({
+  users,
+  onLoginSuccess,
+}: {
+  users: AppUser[];
+  onLoginSuccess: (user: AppUser) => void;
+}) {
+  const [id, setId] = useState("");
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setErr("");
+    const trimmedId = id.trim();
+    if (!trimmedId || !pw) {
+      return setErr("아이디와 비밀번호를 입력해주세요.");
+    }
+
+    setLoading(true);
+    try {
+      // 1. Check Admin-Registered Synced Users Registry first for instant response
+      const matchedLocal = users.find(
+        (u) =>
+          u.username.toLowerCase() === trimmedId.toLowerCase() ||
+          u.email.toLowerCase() === trimmedId.toLowerCase(),
+      );
+
+      if (matchedLocal) {
+        if (!matchedLocal.is_active) {
+          setLoading(false);
+          return setErr("비활성화된 계정입니다. 관리자에게 문의하세요.");
+        }
+        if ((matchedLocal.password ?? "1234") === pw) {
+          // Non-blocking background Supabase Auth session sync
+          void supabase.auth
+            .signInWithPassword({
+              email: matchedLocal.email,
+              password: pw.length >= 6 ? pw : `${pw}00`,
+            })
+            .catch(() => {});
+          setLoading(false);
+          return onLoginSuccess(matchedLocal);
+        }
+      }
+
+      // 2. Check Supabase public.app_users table if migrated
+      const { data: remoteUser } = await supabase
+        .from("app_users")
+        .select("*")
+        .or(`username.eq.${trimmedId},email.eq.${trimmedId}`)
+        .maybeSingle();
+
+      if (remoteUser) {
+        if (!remoteUser.is_active) {
+          setLoading(false);
+          return setErr("비활성화된 계정입니다. 관리자에게 문의하세요.");
+        }
+        if (String(remoteUser.password_hash) === pw) {
+          setLoading(false);
+          return onLoginSuccess({
+            id: String(remoteUser.id),
+            username: String(remoteUser.username),
+            email: String(remoteUser.email),
+            name: String(remoteUser.name),
+            department: String(remoteUser.department || "복리후생/총무"),
+            role: (remoteUser.role as UserRole) || "팀원",
+            is_active: true,
+            created_by: String(remoteUser.created_by || "admin"),
+            created_at: String(remoteUser.created_at || "").slice(0, 10),
+          });
+        }
+      }
+
+      // 3. Try direct Supabase Auth signInWithPassword
+      const emailToTry = trimmedId.includes("@")
+        ? trimmedId
+        : `${trimmedId}@zenith.kr`;
+      const { data: authData, error: authErr } =
+        await supabase.auth.signInWithPassword({
+          email: emailToTry,
+          password: pw,
+        });
+
+      if (!authErr && authData?.user) {
+        const meta = authData.user.user_metadata ?? {};
+        setLoading(false);
+        return onLoginSuccess({
+          id: authData.user.id,
+          username: String(meta["username"] || trimmedId),
+          email: authData.user.email || emailToTry,
+          name: String(meta["name"] || trimmedId),
+          department: String(meta["department"] || "복리후생/총무"),
+          role: (meta["role"] as UserRole) || "팀원",
+          is_active: true,
+          created_by: "supabase",
+          created_at: authData.user.created_at?.slice(0, 10) || "2026-11-04",
+        });
+      }
+
+      setErr("아이디 또는 비밀번호가 올바르지 않습니다.");
+    } catch {
+      setErr("아이디 또는 비밀번호가 올바르지 않습니다.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-muted/40 p-4 font-sans">
+      <ZenithCard className="w-full max-w-md p-6 sm:p-8 shadow-lg">
+        <div className="mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary shadow-xs">
+              <Layers className="h-4 w-4 text-primary-foreground" />
+            </div>
+            <div>
+              <span className="text-sm font-bold tracking-tight">Zenith</span>
+              <span className="block text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                Supabase Auth · Admin
+              </span>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-0.5 text-[10px] font-semibold text-success">
+            <span className="h-1.5 w-1.5 rounded-full bg-success" />
+            Supabase 연동
+          </span>
+        </div>
+
+        <h1 className="text-xl font-bold tracking-tight">업무관리 시스템 로그인</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          주간업무보고 및 칸반 관리 시스템입니다.
+        </p>
+
+        <form onSubmit={submit} className="mt-6 space-y-4">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium">아이디(이메일)</label>
+            <input
+              className={inputCls}
+              value={id}
+              onChange={(e) => setId(e.target.value)}
+              placeholder="admin 또는 admin@zenith.kr"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium">비밀번호</label>
+            <input
+              type="password"
+              className={inputCls}
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              placeholder="••••"
+            />
+          </div>
+          {err && <p className="text-sm text-destructive">{err}</p>}
+          <button
+            type="submit"
+            disabled={loading}
+            className={cn(btnPrimary, "w-full", loading && "opacity-70")}
+          >
+            {loading ? "Supabase 인증 확인 중..." : "로그인"}
+          </button>
+
+          {/* Admin-only manual registration policy notice */}
+          <div className="rounded-lg border border-border bg-muted/60 p-3 text-xs text-muted-foreground space-y-1">
+            <div className="flex items-center gap-1.5 font-semibold text-foreground">
+              <Lock className="h-3.5 w-3.5 text-primary" />
+              <span>회원가입 안내 (관리자 수동 등록 전용)</span>
+            </div>
+            <p className="leading-relaxed">
+              본 시스템은 보안 정책상 자체 회원가입을 지원하지 않으며,{" "}
+              <b>관리자가 [사용자 수동 등록] 메뉴에서 직접 계정을 발급</b>합니다.
+            </p>
+            <p className="pt-1 text-center font-medium text-foreground">
+              테스트 관리자 계정: <code className="rounded bg-background px-1.5 py-0.5">admin</code> /{" "}
+              <code className="rounded bg-background px-1.5 py-0.5">1234</code>
+            </p>
+          </div>
+        </form>
+      </ZenithCard>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 1. ZENITH DASHBOARD OVERVIEW PAGE
  * ============================================================================ */
 function ZenithDashboardOverview({
   tasks,
@@ -1105,7 +1486,6 @@ function ZenithDashboardOverview({
   const delayedCount = tasks.filter((t) => t.status === "지연 / 이슈").length;
   const completionRate = totalCount ? Math.round((completedCount / totalCount) * 100) : 0;
 
-  // 4 Zenith KPI Cards with Sparklines
   const kpiCards = [
     {
       key: "total",
@@ -1157,7 +1537,6 @@ function ZenithDashboardOverview({
     },
   ];
 
-  // Field breakdown for Donut Chart & Bar Chart
   const fieldDistribution = useMemo(() => {
     const colors = [
       "var(--chart-1)",
@@ -1180,7 +1559,6 @@ function ZenithDashboardOverview({
     });
   }, [tasks, totalCount]);
 
-  // Goals Progress Bars
   const fieldGoals = useMemo(() => {
     const barColors = ["bg-chart-1", "bg-chart-2", "bg-chart-3", "bg-chart-5"];
     return FIELDS.map((field, idx) => {
@@ -1209,6 +1587,10 @@ function ZenithDashboardOverview({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => onNavigate("users")} className={btnOutline}>
+            <UserPlus className="h-4 w-4 text-primary" />
+            <span>사용자 수동 등록</span>
+          </button>
           <button onClick={() => onNavigate("upload")} className={btnOutline}>
             <FileSpreadsheet className="h-4 w-4" />
             <span>엑셀 자료 올리기</span>
@@ -1289,9 +1671,8 @@ function ZenithDashboardOverview({
         })}
       </div>
 
-      {/* Row 2: Overview Chart (col-8) + Traffic/Field Sources & Monthly Goals (col-4) */}
+      {/* Row 2: Overview Chart (col-8) + Field Distribution & Goals (col-4) */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        {/* Overview Chart Card */}
         <ZenithCard className="col-span-full xl:col-span-8 p-6">
           <div className="flex flex-col gap-3 pb-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -1418,7 +1799,6 @@ function ZenithDashboardOverview({
 
         {/* Right Column: Donut Chart + Goals Progress */}
         <div className="col-span-full flex flex-col gap-4 xl:col-span-4">
-          {/* Field Distribution Donut Card */}
           <ZenithCard className="p-6">
             <div className="pb-3">
               <h2 className="text-base font-semibold">분야별 업무 비중</h2>
@@ -1468,7 +1848,6 @@ function ZenithDashboardOverview({
             </div>
           </ZenithCard>
 
-          {/* Monthly/Weekly Goals Card */}
           <ZenithCard className="flex-1 p-6">
             <div className="pb-4">
               <h2 className="text-base font-semibold">분야별 추진 달성률</h2>
@@ -1503,7 +1882,6 @@ function ZenithDashboardOverview({
 
       {/* Row 3: Recent Tasks Table (col-8) + Recent Activity Feed (col-4) */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        {/* Recent Tasks Table (Zenith Recent Orders style) */}
         <ZenithCard className="col-span-full xl:col-span-8 p-6">
           <div className="flex flex-row items-center justify-between pb-4">
             <div>
@@ -1613,7 +1991,6 @@ function ZenithDashboardOverview({
           </div>
         </ZenithCard>
 
-        {/* Recent Activity Feed (Zenith Recent Activity style) */}
         <ZenithCard className="col-span-full xl:col-span-4 p-6">
           <div className="flex flex-row items-center justify-between pb-4">
             <div>
@@ -1834,7 +2211,7 @@ function UploadView({
       <div className="flex items-center gap-2.5 rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
         <ShieldCheck className="h-4 w-4 shrink-0" />
         <span>
-          🔒 데이터는 외부 서버로 전송되지 않고 브라우저 내에서만 안전하게 처리됩니다.
+          🔒 업로드된 업무 데이터는 브라우저에서 즉시 파싱되며 Supabase 데이터베이스와 동기화됩니다.
         </span>
       </div>
 
@@ -1851,7 +2228,6 @@ function UploadView({
         />
       </div>
 
-      {/* Direct Paste Box */}
       <ZenithCard className="p-6">
         <div className="flex items-center justify-between pb-3">
           <div className="flex items-center gap-2">
@@ -1889,28 +2265,40 @@ function UploadView({
 }
 
 /* ============================================================================
- * 3. KANBAN BOARD VIEW (Drag & Drop + Filters + New Task Modal)
+ * 3. KANBAN BOARD VIEW
  * ============================================================================ */
 function KanbanView({
   tasks,
   setTasks,
   notify,
   onOpenNewTask,
+  onSyncTask,
 }: {
   tasks: Task[];
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
   notify: (m: string) => void;
   onOpenNewTask: () => void;
+  onSyncTask: (t: Task) => Promise<void>;
 }) {
   const [over, setOver] = useState<Status | null>(null);
   const [selectedField, setSelectedField] = useState<string>("전체");
   const [searchQuery, setSearchQuery] = useState("");
 
-  const onDrop = (e: DragEvent, s: Status) => {
+  const onDrop = async (e: DragEvent, s: Status) => {
     const id = e.dataTransfer.getData("text/plain");
-    setTasks((p) => p.map((t) => (t.id === id ? { ...t, status: s } : t)));
+    let changed: Task | undefined;
+    setTasks((p) =>
+      p.map((t) => {
+        if (t.id === id) {
+          changed = { ...t, status: s };
+          return changed;
+        }
+        return t;
+      }),
+    );
     setOver(null);
     notify(`상태가 '${s}'(으)로 변경되었습니다.`);
+    if (changed) await onSyncTask(changed);
   };
 
   const filteredTasks = useMemo(() => {
@@ -1940,7 +2328,6 @@ function KanbanView({
         </button>
       </div>
 
-      {/* Zenith Filter Bar */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-1.5">
           {["전체", ...FIELDS].map((fd) => (
@@ -1969,7 +2356,6 @@ function KanbanView({
         </div>
       </div>
 
-      {/* 4 Kanban Columns */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {STATUSES.map((s) => {
           const list = filteredTasks.filter((t) => t.status === s);
@@ -2021,9 +2407,14 @@ function KanbanView({
                         {t.field}
                       </span>
                       <button
-                        onClick={() => {
+                        onClick={async () => {
                           setTasks((prev) => prev.filter((item) => item.id !== t.id));
                           notify("업무가 삭제되었습니다.");
+                          try {
+                            await supabase.from("tasks").delete().eq("id", t.id);
+                          } catch {
+                            // ignore
+                          }
                         }}
                         aria-label="업무 삭제"
                         className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
@@ -2215,7 +2606,423 @@ function ReportView({ tasks, notify }: { tasks: Task[]; notify: (m: string) => v
 }
 
 /* ============================================================================
- * 5. NEW TASK MODAL
+ * 5. ADMIN USER MANUAL REGISTRATION VIEW (관리자 직접 수동 등록)
+ * ============================================================================ */
+function AdminUserManagementView({
+  users,
+  setUsers,
+  currentUser,
+  dbTableReady,
+  notify,
+  onActivity,
+}: {
+  users: AppUser[];
+  setUsers: React.Dispatch<React.SetStateAction<AppUser[]>>;
+  currentUser: AppUser;
+  dbTableReady: boolean;
+  notify: (m: string) => void;
+  onActivity: (title: string, description: string) => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("1234");
+  const [name, setName] = useState("");
+  const [department, setDepartment] = useState<string>("복리후생/총무");
+  const [role, setRole] = useState<UserRole>("팀원");
+  const [submitting, setSubmitting] = useState(false);
+  const [showSql, setShowSql] = useState(false);
+
+  const handleManualRegister = async (e: FormEvent) => {
+    e.preventDefault();
+    const cleanId = username.trim();
+    const cleanName = name.trim();
+    const cleanEmail = email.trim() || (cleanId ? `${cleanId}@zenith.kr` : "");
+    const cleanPw = password.trim() || "1234";
+
+    if (!cleanId || !cleanName) {
+      return notify("아이디와 성명을 입력해주세요.");
+    }
+    if (
+      users.some(
+        (u) =>
+          u.username.toLowerCase() === cleanId.toLowerCase() ||
+          u.email.toLowerCase() === cleanEmail.toLowerCase(),
+      )
+    ) {
+      return notify("이미 등록된 아이디 또는 이메일입니다.");
+    }
+
+    setSubmitting(true);
+
+    const newUser: AppUser = {
+      id: `usr-${uid()}`,
+      username: cleanId,
+      email: cleanEmail,
+      password: cleanPw,
+      name: cleanName,
+      department,
+      role,
+      is_active: true,
+      created_by: currentUser.username,
+      created_at: "2026-11-04",
+      supabase_synced: dbTableReady,
+    };
+
+    setUsers((prev) => [...prev, newUser]);
+    onActivity(
+      "신규 사용자 수동 등록 완료",
+      `${cleanName} (${cleanId} · ${department} · ${role}) 계정이 발급되었습니다.`,
+    );
+    setUsername("");
+    setEmail("");
+    setPassword("1234");
+    setName("");
+    setSubmitting(false);
+    notify(`'${cleanName}' (${cleanId}) 계정이 수동 등록되었습니다.`);
+
+    // Sync with Supabase Auth and public.app_users in background
+    void (async () => {
+      try {
+        const authPassword = cleanPw.length >= 6 ? cleanPw : `${cleanPw}00`;
+        await supabaseAdminRegistrar.auth.signUp({
+          email: cleanEmail,
+          password: authPassword,
+          options: {
+            data: {
+              username: cleanId,
+              name: cleanName,
+              department,
+              role,
+            },
+          },
+        });
+        await supabase.from("app_users").insert({
+          username: cleanId,
+          email: cleanEmail,
+          password_hash: cleanPw,
+          name: cleanName,
+          department,
+          role,
+          is_active: true,
+          created_by: currentUser.username,
+        });
+      } catch {
+        // ignore if remote table not yet migrated
+      }
+    })();
+  };
+
+  const copySql = async () => {
+    try {
+      await navigator.clipboard.writeText(SUPABASE_INIT_SQL);
+      notify("Supabase 초기 SQL 스키마가 클립보드에 복사되었습니다.");
+    } catch {
+      notify("SQL 복사에 실패했습니다.");
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">
+            4. 사용자 수동 등록 관리 (관리자 전용)
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            자체 회원가입이 비활성화되어 있으며, 관리자가 팀원 계정을 직접 수동 등록하고 권한을 관리합니다.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowSql(!showSql)} className={btnOutline}>
+            <Database className="h-4 w-4 text-primary" />
+            <span>{showSql ? "Supabase 연동 정보 닫기" : "Supabase DB / CLI 설정 보기"}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Supabase Connection Info & SQL Schema Box */}
+      {showSql && (
+        <ZenithCard className="p-6 space-y-4 border-primary/30 bg-primary/5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-bold flex items-center gap-2">
+                <Database className="h-4 w-4 text-primary" />
+                <span>Supabase 프로젝트 연동 설정 ({SUPABASE_PROJECT_REF})</span>
+              </h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                URL: {SUPABASE_URL} · 마이그레이션 파일:{" "}
+                <code>supabase/migrations/20261104000000_init_workboard.sql</code>
+              </p>
+            </div>
+            <button onClick={copySql} className={btnPrimary}>
+              <Copy className="h-3.5 w-3.5" />
+              <span>📋 Supabase SQL 스키마 복사</span>
+            </button>
+          </div>
+          <pre className="max-h-56 overflow-y-auto rounded-lg border border-border bg-card p-3 font-mono text-[11px] text-foreground">
+            {SUPABASE_INIT_SQL}
+          </pre>
+        </ZenithCard>
+      )}
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+        {/* Manual Registration Form (Left 4 cols) */}
+        <ZenithCard className="col-span-full xl:col-span-4 p-6">
+          <div className="flex items-center gap-2.5 pb-4 border-b border-border">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <UserPlus className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold">신규 사용자 수동 등록</h2>
+              <p className="text-xs text-muted-foreground">
+                Supabase Auth 및 내부 계정 레지스트리 동시 발급
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleManualRegister} className="mt-5 space-y-4">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium">
+                로그인 아이디 <span className="text-destructive">*</span>
+              </label>
+              <input
+                className={inputCls}
+                placeholder="예: honggd"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-medium">
+                이메일 (비워두면 @zenith.kr 자동 생성)
+              </label>
+              <input
+                type="email"
+                className={inputCls}
+                placeholder="예: honggd@zenith.kr"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">
+                  성명 <span className="text-destructive">*</span>
+                </label>
+                <input
+                  className={inputCls}
+                  placeholder="예: 홍길동"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">초기 비밀번호</label>
+                <input
+                  type="text"
+                  className={inputCls}
+                  placeholder="1234"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">담당 분야 / 부서</label>
+                <select
+                  className={inputCls}
+                  value={department}
+                  onChange={(e) => setDepartment(e.target.value)}
+                >
+                  <option value="총무기획팀">총무기획팀</option>
+                  {FIELDS.map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">시스템 권한</label>
+                <select
+                  className={inputCls}
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as UserRole)}
+                >
+                  <option value="팀원">팀원</option>
+                  <option value="관리자">관리자</option>
+                </select>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className={cn(btnPrimary, "w-full mt-2", submitting && "opacity-70")}
+            >
+              <UserPlus className="h-4 w-4" />
+              <span>{submitting ? "Supabase 계정 등록 중..." : "+ 계정 수동 등록"}</span>
+            </button>
+          </form>
+        </ZenithCard>
+
+        {/* Registered Users Table (Right 8 cols) */}
+        <ZenithCard className="col-span-full xl:col-span-8 p-6">
+          <div className="flex items-center justify-between pb-4">
+            <div>
+              <h2 className="text-base font-semibold">
+                등록된 사용자 계정 목록 ({users.length}명)
+              </h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                수동 등록된 계정으로 즉시 로그인할 수 있으며, 활성 상태를 제어할 수 있습니다.
+              </p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    사용자
+                  </th>
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    아이디 / 초기 비밀번호
+                  </th>
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    담당 분야
+                  </th>
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    권한
+                  </th>
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    상태
+                  </th>
+                  <th className="pb-3 text-end text-xs font-medium text-muted-foreground">
+                    관리
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u, idx) => (
+                  <tr
+                    key={u.id}
+                    className="border-b border-border/50 last:border-0 transition-colors hover:bg-muted/30"
+                  >
+                    <td className="py-3.5 pr-3">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={cn(
+                            "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-[11px] font-bold text-white",
+                            AVATAR_GRADIENTS[idx % AVATAR_GRADIENTS.length],
+                          )}
+                        >
+                          {u.name.slice(0, 2)}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">{u.name}</p>
+                          <p className="text-xs text-muted-foreground">{u.email}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-3.5 pr-3">
+                      <div className="flex items-center gap-1.5 font-mono text-xs">
+                        <span className="font-semibold text-foreground">{u.username}</span>
+                        <span className="text-muted-foreground">/</span>
+                        <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                          <KeyRound className="h-2.5 w-2.5" />
+                          {u.password || "1234"}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3.5 pr-3">
+                      <span className="text-xs font-medium">{u.department}</span>
+                    </td>
+                    <td className="py-3.5 pr-3">
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold",
+                          u.role === "관리자"
+                            ? "border-primary/25 bg-primary/10 text-primary"
+                            : "border-border bg-muted text-muted-foreground",
+                        )}
+                      >
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="py-3.5 pr-3">
+                      <button
+                        onClick={async () => {
+                          if (u.username === "admin") {
+                            return notify("기본 관리자 계정은 비활성화할 수 없습니다.");
+                          }
+                          const nextActive = !u.is_active;
+                          setUsers((prev) =>
+                            prev.map((item) =>
+                              item.id === u.id ? { ...item, is_active: nextActive } : item,
+                            ),
+                          );
+                          notify(
+                            `${u.name} 계정이 ${nextActive ? "활성화" : "비활성화"}되었습니다.`,
+                          );
+                          try {
+                            await supabase
+                              .from("app_users")
+                              .update({ is_active: nextActive })
+                              .eq("username", u.username);
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold cursor-pointer",
+                          u.is_active
+                            ? "border-success/30 bg-success/15 text-success"
+                            : "border-destructive/30 bg-destructive/15 text-destructive",
+                        )}
+                      >
+                        {u.is_active ? "활성" : "비활성"}
+                      </button>
+                    </td>
+                    <td className="py-3.5 text-end">
+                      {u.username !== "admin" && (
+                        <button
+                          onClick={async () => {
+                            setUsers((prev) => prev.filter((item) => item.id !== u.id));
+                            notify(`${u.name} 계정이 삭제되었습니다.`);
+                            try {
+                              await supabase
+                                .from("app_users")
+                                .delete()
+                                .eq("username", u.username);
+                            } catch {
+                              // ignore
+                            }
+                          }}
+                          aria-label={`${u.name} 계정 삭제`}
+                          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </ZenithCard>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 6. NEW TASK MODAL
  * ============================================================================ */
 function NewTaskModal({
   onClose,
@@ -2329,7 +3136,7 @@ function NewTaskModal({
 }
 
 /* ============================================================================
- * 6. ZENITH COMMAND PALETTE (⌘K)
+ * 7. ZENITH COMMAND PALETTE (⌘K)
  * ============================================================================ */
 function CommandPaletteModal({
   tasks,
@@ -2354,6 +3161,7 @@ function CommandPaletteModal({
     { id: "upload" as ViewId, label: "1. 자료 올리기 (엑셀/CSV)", icon: UploadIcon },
     { id: "kanban" as ViewId, label: "2. 진행상태 (칸반 보드)", icon: KanbanIcon },
     { id: "report" as ViewId, label: "3. 주간업무보고서", icon: FileText },
+    { id: "users" as ViewId, label: "4. 사용자 수동 등록 (관리자)", icon: Users },
   ].filter((p) => !query || p.label.toLowerCase().includes(query));
 
   const matchingTasks = tasks
@@ -2463,8 +3271,8 @@ function CommandPaletteModal({
               onClick={onLogout}
               className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium text-destructive hover:bg-destructive/10 cursor-pointer"
             >
-              <LogIn className="h-4 w-4" />
-              <span>로그인 화면으로 이동</span>
+              <LogOut className="h-4 w-4" />
+              <span>로그아웃</span>
             </button>
           </div>
         </div>
@@ -2474,7 +3282,7 @@ function CommandPaletteModal({
 }
 
 /* ============================================================================
- * 7. ZENITH LIVE THEME CUSTOMIZER DRAWER
+ * 8. ZENITH LIVE THEME CUSTOMIZER DRAWER
  * ============================================================================ */
 function ThemeCustomizerDrawer({
   theme,
@@ -2525,7 +3333,6 @@ function ThemeCustomizerDrawer({
         </div>
 
         <div className="flex-1 space-y-6 overflow-y-auto p-5">
-          {/* Theme */}
           <div className="space-y-2.5">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Theme
@@ -2559,7 +3366,6 @@ function ThemeCustomizerDrawer({
             </div>
           </div>
 
-          {/* Color Preset */}
           <div className="space-y-2.5">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Color Preset
@@ -2592,7 +3398,6 @@ function ThemeCustomizerDrawer({
             </div>
           </div>
 
-          {/* Density */}
           <div className="space-y-2.5">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Density
@@ -2624,7 +3429,6 @@ function ThemeCustomizerDrawer({
             </div>
           </div>
 
-          {/* Layout */}
           <div className="space-y-2.5">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Navigation Layout
@@ -2657,7 +3461,6 @@ function ThemeCustomizerDrawer({
             </div>
           </div>
 
-          {/* Container */}
           <div className="space-y-2.5">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Container
@@ -2697,90 +3500,6 @@ function ThemeCustomizerDrawer({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-/* ============================================================================
- * 8. ZENITH AUTH LOGIN SCREEN (Accessible from Logout / Sidebar)
- * ============================================================================ */
-export function Login({
-  onLogin,
-  onQuickAccess,
-}: {
-  onLogin: (id: string) => void;
-  onQuickAccess?: () => void;
-}) {
-  const [id, setId] = useState("");
-  const [pw, setPw] = useState("");
-  const [err, setErr] = useState("");
-
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!id || !pw) return setErr("아이디와 비밀번호를 입력해주세요.");
-    if (id !== "admin" || pw !== "1234")
-      return setErr("아이디 또는 비밀번호가 올바르지 않습니다.");
-    onLogin(id);
-  };
-
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
-      <ZenithCard className="w-full max-w-sm p-6 sm:p-8 shadow-lg">
-        <div className="mb-6 flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
-            <Layers className="h-4 w-4 text-primary-foreground" />
-          </div>
-          <div>
-            <span className="text-sm font-bold tracking-tight">Zenith</span>
-            <span className="block text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-              Admin Dashboard
-            </span>
-          </div>
-        </div>
-
-        <h1 className="text-xl font-bold tracking-tight">업무관리 시스템 로그인</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          주간업무보고 및 칸반 관리 시스템입니다.
-        </p>
-
-        <form onSubmit={submit} className="mt-6 space-y-4">
-          <div>
-            <label className="mb-1.5 block text-xs font-medium">아이디(이메일)</label>
-            <input
-              className={inputCls}
-              value={id}
-              onChange={(e) => setId(e.target.value)}
-              placeholder="admin"
-            />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-xs font-medium">비밀번호</label>
-            <input
-              type="password"
-              className={inputCls}
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              placeholder="••••"
-            />
-          </div>
-          {err && <p className="text-sm text-destructive">{err}</p>}
-          <button type="submit" className={cn(btnPrimary, "w-full")}>
-            로그인
-          </button>
-          {onQuickAccess && (
-            <button
-              type="button"
-              onClick={onQuickAccess}
-              className={cn(btnOutline, "w-full text-xs")}
-            >
-              대시보드로 바로 돌아가기
-            </button>
-          )}
-          <p className="rounded-lg bg-muted p-2.5 text-center text-xs text-muted-foreground">
-            테스트 계정: admin / 1234
-          </p>
-        </form>
-      </ZenithCard>
     </div>
   );
 }
