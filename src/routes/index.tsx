@@ -148,7 +148,7 @@ async function readFiles(files: File[]) {
   for (const file of files) {
     const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false });
     for (const name of wb.SheetNames) {
-      const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name], { header: 1, raw: false, defval: "" });
+      const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name]!, { header: 1, raw: false, defval: "" });
       const tsv = rows.map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " ")).join("\t")).join("\n");
       (name.includes("지난주") ? prev : cur).push(...parsePaste(tsv));
     }
