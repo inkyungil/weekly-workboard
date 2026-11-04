@@ -15,7 +15,7 @@ describe("App (Supabase Auth + Admin Manual Registration + Zenith Jexcel Workboa
   it("logs in as admin, checks Jexcel sheets in Upload view, and registers a user manually", async () => {
     render(<App />);
 
-    fireEvent.change(screen.getByPlaceholderText("admin 또는 admin@zenith.kr"), {
+    fireEvent.change(screen.getByPlaceholderText("예: admin"), {
       target: { value: "admin" },
     });
     fireEvent.change(screen.getByPlaceholderText("••••"), {

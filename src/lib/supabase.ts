@@ -30,6 +30,14 @@ export const supabaseAdminRegistrar = createClient(
 
 export type UserRole = "관리자" | "팀원";
 
+// Supabase Auth 는 이메일 기반이므로 아이디를 내부 이메일(아이디@zenith.kr)로 변환해 사용 — 사용자에게는 노출하지 않음
+export const AUTH_EMAIL_DOMAIN = "zenith.kr";
+export const USERNAME_PATTERN = /^[a-z0-9._-]{3,30}$/;
+
+export function usernameToAuthEmail(username: string): string {
+  return `${username.trim().toLowerCase()}@${AUTH_EMAIL_DOMAIN}`;
+}
+
 export type AppUser = {
   id: string;
   username: string;

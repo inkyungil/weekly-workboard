@@ -72,6 +72,8 @@ import {
   mapAppUserRow,
   loadLocalUsers,
   saveLocalUsers,
+  usernameToAuthEmail,
+  USERNAME_PATTERN,
   type AppUser,
   type UserRole,
 } from "@/lib/supabase";
@@ -1033,7 +1035,7 @@ export default function App() {
                         <p className="text-sm font-semibold">
                           {currentUser.name} ({currentUser.role})
                         </p>
-                        <p className="text-xs text-muted-foreground">{currentUser.email}</p>
+                        <p className="text-xs text-muted-foreground">@{currentUser.username}</p>
                       </div>
                       <div className="my-1 border-t border-border" />
                       <button
@@ -1270,17 +1272,19 @@ export function Login({
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setErr("");
-    const trimmedId = id.trim();
+    const trimmedId = id.trim().toLowerCase();
     if (!trimmedId || !pw) {
       return setErr("아이디와 비밀번호를 입력해주세요.");
+    }
+    if (!USERNAME_PATTERN.test(trimmedId)) {
+      return setErr("아이디 또는 비밀번호가 올바르지 않습니다.");
     }
 
     setLoading(true);
     try {
-      // 아이디(username) 또는 이메일로 Supabase Auth 로그인 — 비밀번호 검증은 서버에서만 수행
-      const email = trimmedId.includes("@") ? trimmedId : `${trimmedId}@zenith.kr`;
+      // 아이디로 Supabase Auth 로그인 — 비밀번호 검증은 서버에서만 수행
       const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
-        email,
+        email: usernameToAuthEmail(trimmedId),
         password: pw,
       });
 
@@ -1333,12 +1337,14 @@ export function Login({
 
         <form onSubmit={submit} className="mt-6 space-y-4">
           <div>
-            <label className="mb-1.5 block text-xs font-medium">아이디(이메일)</label>
+            <label className="mb-1.5 block text-xs font-medium">아이디</label>
             <input
               className={inputCls}
               value={id}
               onChange={(e) => setId(e.target.value)}
-              placeholder="admin 또는 admin@zenith.kr"
+              placeholder="예: admin"
+              autoComplete="username"
+              autoCapitalize="none"
             />
           </div>
           <div>
@@ -1349,6 +1355,7 @@ export function Login({
               value={pw}
               onChange={(e) => setPw(e.target.value)}
               placeholder="••••"
+              autoComplete="current-password"
             />
           </div>
           {err && <p className="text-sm text-destructive">{err}</p>}
@@ -2889,7 +2896,6 @@ function AdminUserManagementView({
   onActivity: (title: string, description: string) => void;
 }) {
   const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [department, setDepartment] = useState<string>("복리후생/총무");
@@ -2899,13 +2905,16 @@ function AdminUserManagementView({
 
   const handleManualRegister = async (e: FormEvent) => {
     e.preventDefault();
-    const cleanId = username.trim();
+    const cleanId = username.trim().toLowerCase();
     const cleanName = name.trim();
-    const cleanEmail = email.trim() || (cleanId ? `${cleanId}@zenith.kr` : "");
+    const cleanEmail = usernameToAuthEmail(cleanId);
     const cleanPw = password.trim();
 
     if (!cleanId || !cleanName) {
       return notify("아이디와 성명을 입력해주세요.");
+    }
+    if (!USERNAME_PATTERN.test(cleanId)) {
+      return notify("아이디는 영문 소문자·숫자·._- 조합 3~30자로 입력해주세요.");
     }
     if (cleanPw.length < 8) {
       return notify("초기 비밀번호는 8자 이상이어야 합니다.");
@@ -2917,7 +2926,7 @@ function AdminUserManagementView({
           u.email.toLowerCase() === cleanEmail.toLowerCase(),
       )
     ) {
-      return notify("이미 등록된 아이디 또는 이메일입니다.");
+      return notify("이미 등록된 아이디입니다.");
     }
 
     setSubmitting(true);
@@ -2960,7 +2969,6 @@ function AdminUserManagementView({
         `${cleanName} (${cleanId} · ${department} · ${role}) 계정이 발급되었습니다.`,
       );
       setUsername("");
-      setEmail("");
       setPassword("");
       setName("");
       notify(`'${cleanName}' (${cleanId}) 계정이 수동 등록되었습니다.`);
@@ -3050,18 +3058,6 @@ function AdminUserManagementView({
               />
             </div>
 
-            <div>
-              <label className="mb-1.5 block text-xs font-medium">
-                이메일 (비워두면 @zenith.kr 자동 생성)
-              </label>
-              <input
-                type="email"
-                className={inputCls}
-                placeholder="예: honggd@zenith.kr"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
 
             <div className="grid grid-cols-2 gap-2.5">
               <div>
@@ -3182,7 +3178,7 @@ function AdminUserManagementView({
                         </div>
                         <div>
                           <p className="text-sm font-medium">{u.name}</p>
-                          <p className="text-xs text-muted-foreground">{u.email}</p>
+                          <p className="text-xs text-muted-foreground">@{u.username}</p>
                         </div>
                       </div>
                     </td>
