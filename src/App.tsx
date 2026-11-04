@@ -45,8 +45,13 @@ import {
   PanelTop,
   Maximize2,
   Minimize2,
-  Database,
   Lock,
+  Network,
+  Award,
+  Pencil,
+  ArrowUp,
+  ArrowDown,
+  Check,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -66,16 +71,18 @@ import { cn } from "@/lib/utils";
 import {
   supabase,
   supabaseAdminRegistrar,
-  SUPABASE_URL,
   SUPABASE_PROJECT_REF,
-  SUPABASE_INIT_SQL,
   fetchProfile,
   mapAppUserRow,
   loadLocalUsers,
   saveLocalUsers,
   usernameToAuthEmail,
   USERNAME_PATTERN,
+  flattenDepartments,
+  descendantIds,
   type AppUser,
+  type Department,
+  type Position,
   type UserRole,
 } from "@/lib/supabase";
 
@@ -104,21 +111,37 @@ type ActivityItem = {
   read: boolean;
 };
 
-type ViewId = "dashboard" | "upload" | "kanban" | "report" | "users";
+type ViewId = "dashboard" | "upload" | "kanban" | "report" | "members" | "org" | "positions";
 
-// 화면별 URL — 각 ViewId 는 /<ViewId> 경로에 대응
-const VIEW_IDS: ViewId[] = ["dashboard", "upload", "kanban", "report", "users"];
+// 화면별 URL
+const VIEW_PATHS: Record<ViewId, string> = {
+  dashboard: "/dashboard",
+  upload: "/upload",
+  kanban: "/kanban",
+  report: "/report",
+  members: "/accounts/members",
+  org: "/accounts/org",
+  positions: "/accounts/positions",
+};
 const VIEW_TITLES: Record<ViewId, string> = {
   dashboard: "대시보드",
   upload: "자료 올리기",
   kanban: "진행상태",
   report: "주간업무보고서",
-  users: "사용자 관리",
+  members: "회원 관리",
+  org: "조직도 관리",
+  positions: "직급 관리",
 };
-const viewPath = (v: ViewId) => `/${v}`;
+// 계정관리 화면 (관리자 전용)
+const ACCOUNT_VIEWS: ViewId[] = ["members", "org", "positions"];
+// 예전 주소 호환
+const LEGACY_PATHS: Record<string, ViewId> = { "/users": "members", "/accounts": "members" };
+
+const viewPath = (v: ViewId) => VIEW_PATHS[v];
 const pathToView = (pathname: string): ViewId | null => {
-  const seg = pathname.replace(/^\/+|\/+$/g, "");
-  return (VIEW_IDS as string[]).includes(seg) ? (seg as ViewId) : null;
+  const path = pathname.replace(/\/+$/, "") || "/";
+  const found = (Object.keys(VIEW_PATHS) as ViewId[]).find((v) => VIEW_PATHS[v] === path);
+  return found ?? null;
 };
 type ThemeMode = "light" | "dark" | "system";
 type ColorPreset = "neutral" | "zinc" | "blue" | "violet" | "rose" | "orange";
@@ -337,6 +360,8 @@ function Workboard() {
     () => loadLocalUsers()[0]!,
   );
   const [tasks, setTasks] = useState<Task[]>(SAMPLE);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [positions, setPositions] = useState<Position[]>([]);
   const [activities, setActivities] = useState<ActivityItem[]>(INITIAL_ACTIVITIES);
   const activeView: ViewId = pathToView(location.pathname) ?? "dashboard";
   const setActiveView = (v: ViewId) => navigate(viewPath(v));
@@ -401,6 +426,18 @@ function Workboard() {
       setDbTableReady(true);
       setUsers(remoteUsers.map(mapAppUserRow));
     }
+
+    const [{ data: remoteDepts, error: deptErr }, { data: remotePositions, error: posErr }] =
+      await Promise.all([
+        supabase.from("departments").select("id, name, parent_id, sort_order"),
+        supabase.from("positions").select("id, name, rank").order("rank", { ascending: true }),
+      ]);
+    if (!deptErr && Array.isArray(remoteDepts) && isMounted()) {
+      setDepartments(remoteDepts as Department[]);
+    }
+    if (!posErr && Array.isArray(remotePositions) && isMounted()) {
+      setPositions(remotePositions as Position[]);
+    }
   };
 
   // Initial Supabase session & database sync
@@ -439,6 +476,11 @@ function Workboard() {
   // URL 가드: 비로그인 → /login (원래 가려던 경로 기억), 로그인 상태에서 /login·/·없는 경로 → 화면으로 이동
   useEffect(() => {
     if (!authChecked) return;
+    const legacy = LEGACY_PATHS[location.pathname.replace(/\/+$/, "")];
+    if (legacy) {
+      navigate(viewPath(legacy), { replace: true });
+      return;
+    }
     const view = pathToView(location.pathname);
     if (!isLoggedIn) {
       if (location.pathname !== "/login") {
@@ -447,8 +489,10 @@ function Workboard() {
     } else if (!view) {
       const from = (location.state as { from?: string } | null)?.from;
       navigate(from ?? viewPath("dashboard"), { replace: true });
+    } else if (ACCOUNT_VIEWS.includes(view) && currentUser.role !== "관리자") {
+      navigate(viewPath("dashboard"), { replace: true });
     }
-  }, [authChecked, isLoggedIn, location.pathname, location.state, navigate]);
+  }, [authChecked, isLoggedIn, currentUser.role, location.pathname, location.state, navigate]);
 
   useEffect(() => {
     document.title = isLoggedIn
@@ -633,18 +677,34 @@ function Workboard() {
         },
       ],
     },
-    {
-      key: "system",
-      label: "System · 계정/설정",
-      items: [
-        {
-          id: "users" as ViewId,
-          label: "4. 사용자 수동 등록 (관리자)",
-          icon: Users,
-          badge: String(users.length),
-        },
-      ],
-    },
+    ...(currentUser.role === "관리자"
+      ? [
+          {
+            key: "accounts",
+            label: "계정관리",
+            items: [
+              {
+                id: "members" as ViewId,
+                label: "회원 관리",
+                icon: Users,
+                badge: String(users.length),
+              },
+              {
+                id: "org" as ViewId,
+                label: "조직도 관리",
+                icon: Network,
+                badge: String(departments.length),
+              },
+              {
+                id: "positions" as ViewId,
+                label: "직급 관리",
+                icon: Award,
+                badge: String(positions.length),
+              },
+            ],
+          },
+        ]
+      : []),
   ];
 
   const SidebarContent = ({ isCollapsed }: { isCollapsed: boolean }) => (
@@ -783,7 +843,10 @@ function Workboard() {
                   {currentUser.name}
                 </span>
                 <span className="truncate text-[11px] text-sidebar-foreground/50">
-                  {currentUser.department} · {currentUser.role}
+                  {departmentName(departments, currentUser)}
+                  {positionName(positions, currentUser.position_id) &&
+                    ` · ${positionName(positions, currentUser.position_id)}`}{" "}
+                  · {currentUser.role}
                 </span>
               </div>
             )}
@@ -913,11 +976,11 @@ function Workboard() {
               <div className="flex items-center gap-2">
                 {currentUser.role === "관리자" && (
                   <button
-                    onClick={() => setActiveView("users")}
+                    onClick={() => setActiveView("members")}
                     className="hidden h-8 items-center gap-1.5 rounded-lg border border-input bg-background px-3 text-xs font-medium transition-colors hover:bg-accent lg:inline-flex cursor-pointer"
                   >
                     <UserPlus className="h-3.5 w-3.5 text-primary" />
-                    <span>사용자 수동 등록</span>
+                    <span>회원 등록</span>
                   </button>
                 )}
 
@@ -1094,7 +1157,7 @@ function Workboard() {
                       <button
                         onClick={() => {
                           setUserMenuOpen(false);
-                          setActiveView("users");
+                          setActiveView("members");
                         }}
                         className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium hover:bg-accent cursor-pointer"
                       >
@@ -1138,7 +1201,13 @@ function Workboard() {
                   { id: "upload" as ViewId, label: "1. 자료 올리기", icon: UploadIcon },
                   { id: "kanban" as ViewId, label: "2. 진행상태 (칸반 보드)", icon: KanbanIcon },
                   { id: "report" as ViewId, label: "3. 주간업무보고서", icon: FileText },
-                  { id: "users" as ViewId, label: "4. 사용자 수동 등록", icon: Users },
+                  ...(currentUser.role === "관리자"
+                    ? [
+                        { id: "members" as ViewId, label: "회원 관리", icon: Users },
+                        { id: "org" as ViewId, label: "조직도 관리", icon: Network },
+                        { id: "positions" as ViewId, label: "직급 관리", icon: Award },
+                      ]
+                    : []),
                 ].map((tabItem) => {
                   const Icon = tabItem.icon;
                   const active = activeView === tabItem.id;
@@ -1214,12 +1283,36 @@ function Workboard() {
               />
             )}
             {activeView === "report" && <ReportView tasks={tasks} notify={notify} />}
-            {activeView === "users" && (
+            {activeView === "members" && (
               <AdminUserManagementView
                 users={users}
                 setUsers={setUsers}
+                departments={departments}
+                positions={positions}
                 currentUser={currentUser}
-                dbTableReady={dbTableReady}
+                notify={notify}
+                onActivity={(title, description) =>
+                  addActivity({ type: "report", title, description })
+                }
+              />
+            )}
+            {activeView === "org" && (
+              <OrgChartView
+                departments={departments}
+                setDepartments={setDepartments}
+                users={users}
+                setUsers={setUsers}
+                notify={notify}
+                onActivity={(title, description) =>
+                  addActivity({ type: "report", title, description })
+                }
+              />
+            )}
+            {activeView === "positions" && (
+              <PositionsView
+                positions={positions}
+                setPositions={setPositions}
+                users={users}
                 notify={notify}
                 onActivity={(title, description) =>
                   addActivity({ type: "report", title, description })
@@ -1565,7 +1658,7 @@ function ZenithDashboardOverview({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={() => onNavigate("users")} className={btnOutline}>
+          <button onClick={() => onNavigate("members")} className={btnOutline}>
             <UserPlus className="h-4 w-4 text-primary" />
             <span>사용자 수동 등록</span>
           </button>
@@ -2933,28 +3026,150 @@ function ReportView({ tasks, notify }: { tasks: Task[]; notify: (m: string) => v
 /* ============================================================================
  * 5. ADMIN USER MANUAL REGISTRATION VIEW (관리자 직접 수동 등록)
  * ============================================================================ */
+type DbResult = { error: { message: string } | null };
+
+// Supabase 쓰기 결과 확인 — 실패하면 알림 후 false
+async function runDb(
+  query: PromiseLike<DbResult>,
+  notify: (m: string) => void,
+  failMsg: string,
+): Promise<boolean> {
+  try {
+    const { error } = await query;
+    if (error) {
+      notify(`${failMsg}: ${error.message}`);
+      return false;
+    }
+    return true;
+  } catch {
+    notify(`${failMsg}: 네트워크 오류`);
+    return false;
+  }
+}
+
+function positionName(positions: Position[], id?: string | null) {
+  return positions.find((p) => p.id === id)?.name ?? "";
+}
+
+function departmentName(departments: Department[], u: AppUser) {
+  return departments.find((d) => d.id === u.department_id)?.name ?? u.department;
+}
+
+const ROOT_PARENT = "";
+
+function DepartmentOptions({ departments }: { departments: Department[] }) {
+  return (
+    <>
+      {flattenDepartments(departments).map(({ dept, depth }) => (
+        <option key={dept.id} value={dept.id}>
+          {`${"  ".repeat(depth)}${depth > 0 ? "└ " : ""}${dept.name}`}
+        </option>
+      ))}
+    </>
+  );
+}
+
+// 클릭하면 입력창으로 바뀌는 이름 편집기
+function InlineNameEdit({
+  value,
+  label,
+  onSave,
+}: {
+  value: string;
+  label: string;
+  onSave: (next: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => {
+          setDraft(value);
+          setEditing(true);
+        }}
+        aria-label={`${label} 이름 수정`}
+        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
+    );
+  }
+
+  const save = async () => {
+    const next = draft.trim();
+    if (next && next !== value) await onSave(next);
+    setEditing(false);
+  };
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input
+        autoFocus
+        className={cn(inputCls, "h-8 w-40")}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void save();
+          if (e.key === "Escape") setEditing(false);
+        }}
+      />
+      <button
+        onClick={() => void save()}
+        aria-label={`${label} 이름 저장`}
+        className="rounded-md p-1.5 text-primary transition-colors hover:bg-primary/10 cursor-pointer"
+      >
+        <Check className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={() => setEditing(false)}
+        aria-label="취소"
+        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent cursor-pointer"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </span>
+  );
+}
+
+/* ============================================================================
+ * 5-1. 계정관리 · 회원 관리
+ * ============================================================================ */
 function AdminUserManagementView({
   users,
   setUsers,
+  departments,
+  positions,
   currentUser,
-  dbTableReady,
   notify,
   onActivity,
 }: {
   users: AppUser[];
   setUsers: React.Dispatch<React.SetStateAction<AppUser[]>>;
+  departments: Department[];
+  positions: Position[];
   currentUser: AppUser;
-  dbTableReady: boolean;
   notify: (m: string) => void;
   onActivity: (title: string, description: string) => void;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
-  const [department, setDepartment] = useState<string>("복리후생/총무");
+  const [departmentId, setDepartmentId] = useState("");
+  const [positionId, setPositionId] = useState("");
   const [role, setRole] = useState<UserRole>("팀원");
   const [submitting, setSubmitting] = useState(false);
-  const [showSql, setShowSql] = useState(false);
+  const [deptFilter, setDeptFilter] = useState("");
+
+  const sortedPositions = [...positions].sort((a, b) => a.rank - b.rank);
+  const rankOf = (u: AppUser) =>
+    positions.find((p) => p.id === u.position_id)?.rank ?? Number.MAX_SAFE_INTEGER;
+
+  const filterIds = deptFilter ? descendantIds(departments, deptFilter) : null;
+  const visibleUsers = users
+    .filter((u) => !filterIds || (u.department_id && filterIds.has(u.department_id)))
+    .sort((a, b) => rankOf(a) - rankOf(b) || a.name.localeCompare(b.name));
 
   const handleManualRegister = async (e: FormEvent) => {
     e.preventDefault();
@@ -2962,6 +3177,7 @@ function AdminUserManagementView({
     const cleanName = name.trim();
     const cleanEmail = usernameToAuthEmail(cleanId);
     const cleanPw = password.trim();
+    const deptName = departments.find((d) => d.id === departmentId)?.name ?? "";
 
     if (!cleanId || !cleanName) {
       return notify("아이디와 성명을 입력해주세요.");
@@ -2990,14 +3206,14 @@ function AdminUserManagementView({
           email: cleanEmail,
           password: cleanPw,
           options: {
-            data: { username: cleanId, name: cleanName, department, role },
+            data: { username: cleanId, name: cleanName, department: deptName, role },
           },
         });
       if (signUpErr || !signUpData.user) {
         return notify(`계정 생성 실패: ${signUpErr?.message ?? "알 수 없는 오류"}`);
       }
 
-      // 2. app_users 프로필/권한 등록 (RLS: 관리자만 가능)
+      // 2. app_users 프로필/소속/직급/권한 등록 (RLS: 관리자만 가능)
       const { data: inserted, error: insertErr } = await supabase
         .from("app_users")
         .insert({
@@ -3005,7 +3221,9 @@ function AdminUserManagementView({
           username: cleanId,
           email: cleanEmail,
           name: cleanName,
-          department,
+          department: deptName,
+          department_id: departmentId || null,
+          position_id: positionId || null,
           role,
           is_active: true,
           created_by: currentUser.username,
@@ -3013,87 +3231,57 @@ function AdminUserManagementView({
         .select()
         .single();
       if (insertErr || !inserted) {
-        return notify(`사용자 등록 실패: ${insertErr?.message ?? "알 수 없는 오류"}`);
+        return notify(`회원 등록 실패: ${insertErr?.message ?? "알 수 없는 오류"}`);
       }
 
       setUsers((prev) => [...prev, mapAppUserRow(inserted)]);
+      const posName = positionName(positions, positionId);
       onActivity(
-        "신규 사용자 수동 등록 완료",
-        `${cleanName} (${cleanId} · ${department} · ${role}) 계정이 발급되었습니다.`,
+        "신규 회원 등록 완료",
+        `${cleanName} (${cleanId} · ${deptName || "소속 없음"}${posName ? ` · ${posName}` : ""} · ${role}) 계정이 발급되었습니다.`,
       );
       setUsername("");
       setPassword("");
       setName("");
-      notify(`'${cleanName}' (${cleanId}) 계정이 수동 등록되었습니다.`);
+      notify(`'${cleanName}' (${cleanId}) 회원이 등록되었습니다.`);
     } finally {
       setSubmitting(false);
     }
   };
 
-  const copySql = async () => {
-    try {
-      await navigator.clipboard.writeText(SUPABASE_INIT_SQL);
-      notify("Supabase 초기 SQL 스키마가 클립보드에 복사되었습니다.");
-    } catch {
-      notify("SQL 복사에 실패했습니다.");
-    }
+  // 회원 소속/직급/권한/상태 변경 — DB 반영 성공 시에만 화면 갱신
+  const updateMember = async (u: AppUser, patch: Partial<AppUser>, label: string) => {
+    const ok = await runDb(
+      supabase.from("app_users").update(patch).eq("id", u.id),
+      notify,
+      `${u.name} ${label} 변경 실패`,
+    );
+    if (!ok) return;
+    setUsers((prev) => prev.map((item) => (item.id === u.id ? { ...item, ...patch } : item)));
+    notify(`${u.name} 님의 ${label}이(가) 변경되었습니다.`);
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            4. 사용자 수동 등록 관리 (관리자 전용)
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            자체 회원가입이 비활성화되어 있으며, 관리자가 팀원 계정을 직접 수동 등록하고 권한을 관리합니다.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowSql(!showSql)} className={btnOutline}>
-            <Database className="h-4 w-4 text-primary" />
-            <span>{showSql ? "Supabase 연동 정보 닫기" : "Supabase DB / CLI 설정 보기"}</span>
-          </button>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">회원 관리</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          관리자가 회원을 직접 등록하고 소속 조직·직급·권한을 관리합니다. 조직과 직급은{" "}
+          <b>조직도 관리</b>, <b>직급 관리</b> 메뉴에서 설정합니다.
+        </p>
       </div>
 
-      {/* Supabase Connection Info & SQL Schema Box */}
-      {showSql && (
-        <ZenithCard className="p-6 space-y-4 border-primary/30 bg-primary/5">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-sm font-bold flex items-center gap-2">
-                <Database className="h-4 w-4 text-primary" />
-                <span>Supabase 프로젝트 연동 설정 ({SUPABASE_PROJECT_REF})</span>
-              </h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                URL: {SUPABASE_URL} · 마이그레이션 파일:{" "}
-                <code>supabase/migrations/20261104000000_init_workboard.sql</code>
-              </p>
-            </div>
-            <button onClick={copySql} className={btnPrimary}>
-              <Copy className="h-3.5 w-3.5" />
-              <span>📋 Supabase SQL 스키마 복사</span>
-            </button>
-          </div>
-          <pre className="max-h-56 overflow-y-auto rounded-lg border border-border bg-card p-3 font-mono text-[11px] text-foreground">
-            {SUPABASE_INIT_SQL}
-          </pre>
-        </ZenithCard>
-      )}
-
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
-        {/* Manual Registration Form (Left 4 cols) */}
+        {/* 회원 등록 폼 */}
         <ZenithCard className="col-span-full xl:col-span-4 p-6">
           <div className="flex items-center gap-2.5 pb-4 border-b border-border">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <UserPlus className="h-4 w-4" />
             </div>
             <div>
-              <h2 className="text-base font-semibold">신규 사용자 수동 등록</h2>
+              <h2 className="text-base font-semibold">신규 회원 등록</h2>
               <p className="text-xs text-muted-foreground">
-                Supabase Auth 및 내부 계정 레지스트리 동시 발급
+                로그인 계정과 회원 정보를 함께 발급합니다
               </p>
             </div>
           </div>
@@ -3110,7 +3298,6 @@ function AdminUserManagementView({
                 onChange={(e) => setUsername(e.target.value)}
               />
             </div>
-
 
             <div className="grid grid-cols-2 gap-2.5">
               <div>
@@ -3138,32 +3325,54 @@ function AdminUserManagementView({
 
             <div className="grid grid-cols-2 gap-2.5">
               <div>
-                <label className="mb-1.5 block text-xs font-medium">담당 분야 / 부서</label>
+                <label className="mb-1.5 block text-xs font-medium">소속 조직</label>
                 <select
+                  aria-label="소속 조직"
                   className={inputCls}
-                  value={department}
-                  onChange={(e) => setDepartment(e.target.value)}
+                  value={departmentId}
+                  onChange={(e) => setDepartmentId(e.target.value)}
                 >
-                  <option value="총무기획팀">총무기획팀</option>
-                  {FIELDS.map((f) => (
-                    <option key={f} value={f}>
-                      {f}
+                  <option value="">선택 안 함</option>
+                  <DepartmentOptions departments={departments} />
+                </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">직급</label>
+                <select
+                  aria-label="직급"
+                  className={inputCls}
+                  value={positionId}
+                  onChange={(e) => setPositionId(e.target.value)}
+                >
+                  <option value="">선택 안 함</option>
+                  {sortedPositions.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
                     </option>
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="mb-1.5 block text-xs font-medium">시스템 권한</label>
-                <select
-                  className={inputCls}
-                  value={role}
-                  onChange={(e) => setRole(e.target.value as UserRole)}
-                >
-                  <option value="팀원">팀원</option>
-                  <option value="관리자">관리자</option>
-                </select>
-              </div>
             </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-medium">시스템 권한</label>
+              <select
+                className={inputCls}
+                value={role}
+                onChange={(e) => setRole(e.target.value as UserRole)}
+              >
+                <option value="팀원">팀원</option>
+                <option value="관리자">관리자</option>
+              </select>
+            </div>
+
+            {(departments.length === 0 || positions.length === 0) && (
+              <p className="rounded-lg border border-warning/30 bg-warning/10 p-2.5 text-xs text-muted-foreground">
+                {departments.length === 0 && "등록된 조직이 없습니다. "}
+                {positions.length === 0 && "등록된 직급이 없습니다. "}
+                조직도 관리 / 직급 관리에서 먼저 등록하세요.
+              </p>
+            )}
 
             <button
               type="submit"
@@ -3171,55 +3380,57 @@ function AdminUserManagementView({
               className={cn(btnPrimary, "w-full mt-2", submitting && "opacity-70")}
             >
               <UserPlus className="h-4 w-4" />
-              <span>{submitting ? "Supabase 계정 등록 중..." : "+ 계정 수동 등록"}</span>
+              <span>{submitting ? "회원 등록 중..." : "+ 회원 등록"}</span>
             </button>
           </form>
         </ZenithCard>
 
-        {/* Registered Users Table (Right 8 cols) */}
+        {/* 회원 목록 */}
         <ZenithCard className="col-span-full xl:col-span-8 p-6">
-          <div className="flex items-center justify-between pb-4">
+          <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-base font-semibold">
-                등록된 사용자 계정 목록 ({users.length}명)
+                회원 목록 ({visibleUsers.length}명)
               </h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                수동 등록된 계정으로 즉시 로그인할 수 있으며, 활성 상태를 제어할 수 있습니다.
+                직급 순으로 정렬되며, 표에서 바로 소속·직급·권한을 변경할 수 있습니다.
               </p>
             </div>
+            <select
+              aria-label="조직 필터"
+              className={cn(inputCls, "sm:w-48")}
+              value={deptFilter}
+              onChange={(e) => setDeptFilter(e.target.value)}
+            >
+              <option value="">전체 조직</option>
+              <DepartmentOptions departments={departments} />
+            </select>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border">
-                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
-                    사용자
-                  </th>
-                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
-                    아이디
-                  </th>
-                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
-                    담당 분야
-                  </th>
-                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
-                    권한
-                  </th>
-                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
-                    상태
-                  </th>
-                  <th className="pb-3 text-end text-xs font-medium text-muted-foreground">
-                    관리
-                  </th>
+                  {["회원", "소속 조직", "직급", "권한", "상태", "관리"].map((h, i) => (
+                    <th
+                      key={h}
+                      className={cn(
+                        "pb-3 text-xs font-medium text-muted-foreground",
+                        i === 5 ? "text-end" : "text-start",
+                      )}
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {users.map((u, idx) => (
+                {visibleUsers.map((u, idx) => (
                   <tr
                     key={u.id}
                     className="border-b border-border/50 last:border-0 transition-colors hover:bg-muted/30"
                   >
-                    <td className="py-3.5 pr-3">
+                    <td className="py-3 pr-3">
                       <div className="flex items-center gap-3">
                         <div
                           className={cn(
@@ -3235,49 +3446,63 @@ function AdminUserManagementView({
                         </div>
                       </div>
                     </td>
-                    <td className="py-3.5 pr-3">
-                      <div className="flex items-center gap-1.5 font-mono text-xs">
-                        <span className="font-semibold text-foreground">{u.username}</span>
-                      </div>
-                    </td>
-                    <td className="py-3.5 pr-3">
-                      <span className="text-xs font-medium">{u.department}</span>
-                    </td>
-                    <td className="py-3.5 pr-3">
-                      <span
-                        className={cn(
-                          "inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold",
-                          u.role === "관리자"
-                            ? "border-primary/25 bg-primary/10 text-primary"
-                            : "border-border bg-muted text-muted-foreground",
-                        )}
+                    <td className="py-3 pr-3">
+                      <select
+                        aria-label={`${u.name} 소속 조직`}
+                        className={cn(inputCls, "h-8 min-w-36 text-xs")}
+                        value={u.department_id ?? ""}
+                        onChange={(e) => {
+                          const id = e.target.value || null;
+                          const deptName = departments.find((d) => d.id === id)?.name ?? "";
+                          void updateMember(
+                            u,
+                            { department_id: id, department: deptName },
+                            "소속 조직",
+                          );
+                        }}
                       >
-                        {u.role}
-                      </span>
+                        <option value="">{u.department_id ? "소속 없음" : u.department || "소속 없음"}</option>
+                        <DepartmentOptions departments={departments} />
+                      </select>
                     </td>
-                    <td className="py-3.5 pr-3">
+                    <td className="py-3 pr-3">
+                      <select
+                        aria-label={`${u.name} 직급`}
+                        className={cn(inputCls, "h-8 min-w-24 text-xs")}
+                        value={u.position_id ?? ""}
+                        onChange={(e) =>
+                          void updateMember(u, { position_id: e.target.value || null }, "직급")
+                        }
+                      >
+                        <option value="">미지정</option>
+                        {sortedPositions.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="py-3 pr-3">
+                      <select
+                        aria-label={`${u.name} 권한`}
+                        className={cn(inputCls, "h-8 w-20 text-xs")}
+                        value={u.role}
+                        disabled={u.username === "admin"}
+                        onChange={(e) =>
+                          void updateMember(u, { role: e.target.value as UserRole }, "권한")
+                        }
+                      >
+                        <option value="팀원">팀원</option>
+                        <option value="관리자">관리자</option>
+                      </select>
+                    </td>
+                    <td className="py-3 pr-3">
                       <button
-                        onClick={async () => {
+                        onClick={() => {
                           if (u.username === "admin") {
                             return notify("기본 관리자 계정은 비활성화할 수 없습니다.");
                           }
-                          const nextActive = !u.is_active;
-                          setUsers((prev) =>
-                            prev.map((item) =>
-                              item.id === u.id ? { ...item, is_active: nextActive } : item,
-                            ),
-                          );
-                          notify(
-                            `${u.name} 계정이 ${nextActive ? "활성화" : "비활성화"}되었습니다.`,
-                          );
-                          try {
-                            await supabase
-                              .from("app_users")
-                              .update({ is_active: nextActive })
-                              .eq("username", u.username);
-                          } catch {
-                            // ignore
-                          }
+                          void updateMember(u, { is_active: !u.is_active }, "상태");
                         }}
                         className={cn(
                           "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold cursor-pointer",
@@ -3289,20 +3514,18 @@ function AdminUserManagementView({
                         {u.is_active ? "활성" : "비활성"}
                       </button>
                     </td>
-                    <td className="py-3.5 text-end">
-                      {u.username !== "admin" && (
+                    <td className="py-3 text-end">
+                      {u.username !== "admin" && u.id !== currentUser.id && (
                         <button
                           onClick={async () => {
+                            const ok = await runDb(
+                              supabase.from("app_users").delete().eq("id", u.id),
+                              notify,
+                              `${u.name} 회원 삭제 실패`,
+                            );
+                            if (!ok) return;
                             setUsers((prev) => prev.filter((item) => item.id !== u.id));
-                            notify(`${u.name} 계정이 삭제되었습니다.`);
-                            try {
-                              await supabase
-                                .from("app_users")
-                                .delete()
-                                .eq("username", u.username);
-                            } catch {
-                              // ignore
-                            }
+                            notify(`${u.name} 회원이 삭제되었습니다.`);
                           }}
                           aria-label={`${u.name} 계정 삭제`}
                           className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
@@ -3313,9 +3536,536 @@ function AdminUserManagementView({
                     </td>
                   </tr>
                 ))}
+                {visibleUsers.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                      해당 조직에 등록된 회원이 없습니다.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
+        </ZenithCard>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 5-2. 계정관리 · 조직도 관리
+ * ============================================================================ */
+function OrgChartView({
+  departments,
+  setDepartments,
+  users,
+  setUsers,
+  notify,
+  onActivity,
+}: {
+  departments: Department[];
+  setDepartments: React.Dispatch<React.SetStateAction<Department[]>>;
+  users: AppUser[];
+  setUsers: React.Dispatch<React.SetStateAction<AppUser[]>>;
+  notify: (m: string) => void;
+  onActivity: (title: string, description: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [parentId, setParentId] = useState(ROOT_PARENT);
+  const [saving, setSaving] = useState(false);
+
+  const tree = flattenDepartments(departments);
+  const siblingsOf = (d: Department) =>
+    departments
+      .filter((x) => x.parent_id === d.parent_id)
+      .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+  const membersOf = (id: string) => users.filter((u) => u.department_id === id);
+
+  const addDepartment = async (e: FormEvent) => {
+    e.preventDefault();
+    const clean = name.trim();
+    if (!clean) return notify("조직명을 입력해주세요.");
+    const parent = parentId || null;
+    if (departments.some((d) => d.parent_id === parent && d.name === clean)) {
+      return notify("같은 상위 조직에 이미 있는 조직명입니다.");
+    }
+    const sortOrder =
+      Math.max(0, ...departments.filter((d) => d.parent_id === parent).map((d) => d.sort_order)) + 1;
+
+    setSaving(true);
+    try {
+      const { data, error } = await supabase
+        .from("departments")
+        .insert({ name: clean, parent_id: parent, sort_order: sortOrder })
+        .select("id, name, parent_id, sort_order")
+        .single();
+      if (error || !data) {
+        return notify(`조직 추가 실패: ${error?.message ?? "알 수 없는 오류"}`);
+      }
+      setDepartments((prev) => [...prev, data as Department]);
+      onActivity("조직 추가", `'${clean}' 조직이 추가되었습니다.`);
+      setName("");
+      notify(`'${clean}' 조직이 추가되었습니다.`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renameDepartment = async (d: Department, next: string) => {
+    if (departments.some((x) => x.id !== d.id && x.parent_id === d.parent_id && x.name === next)) {
+      return notify("같은 상위 조직에 이미 있는 조직명입니다.");
+    }
+    const ok = await runDb(
+      supabase.from("departments").update({ name: next }).eq("id", d.id),
+      notify,
+      "조직명 변경 실패",
+    );
+    if (!ok) return;
+    // 회원 표시용 부서명도 함께 갱신
+    await runDb(
+      supabase.from("app_users").update({ department: next }).eq("department_id", d.id),
+      notify,
+      "회원 부서명 갱신 실패",
+    );
+    setDepartments((prev) => prev.map((x) => (x.id === d.id ? { ...x, name: next } : x)));
+    setUsers((prev) => prev.map((u) => (u.department_id === d.id ? { ...u, department: next } : u)));
+    notify(`'${d.name}' → '${next}' 이름이 변경되었습니다.`);
+  };
+
+  const moveParent = async (d: Department, nextParent: string | null) => {
+    if (departments.some((x) => x.parent_id === nextParent && x.name === d.name && x.id !== d.id)) {
+      return notify("이동할 상위 조직에 같은 이름의 조직이 있습니다.");
+    }
+    const sortOrder =
+      Math.max(0, ...departments.filter((x) => x.parent_id === nextParent).map((x) => x.sort_order)) + 1;
+    const ok = await runDb(
+      supabase
+        .from("departments")
+        .update({ parent_id: nextParent, sort_order: sortOrder })
+        .eq("id", d.id),
+      notify,
+      "상위 조직 변경 실패",
+    );
+    if (!ok) return;
+    setDepartments((prev) =>
+      prev.map((x) => (x.id === d.id ? { ...x, parent_id: nextParent, sort_order: sortOrder } : x)),
+    );
+    notify(`'${d.name}' 조직의 상위 조직이 변경되었습니다.`);
+  };
+
+  // 같은 상위 조직 안에서 순서 바꾸기
+  const swapOrder = async (d: Department, dir: -1 | 1) => {
+    const sibs = siblingsOf(d);
+    const idx = sibs.findIndex((x) => x.id === d.id);
+    const other = sibs[idx + dir];
+    if (!other) return;
+    // sort_order 가 같을 수 있으므로 위치 기반으로 다시 매김
+    const aOrder = idx + dir + 1;
+    const bOrder = idx + 1;
+    const ok =
+      (await runDb(
+        supabase.from("departments").update({ sort_order: aOrder }).eq("id", d.id),
+        notify,
+        "순서 변경 실패",
+      )) &&
+      (await runDb(
+        supabase.from("departments").update({ sort_order: bOrder }).eq("id", other.id),
+        notify,
+        "순서 변경 실패",
+      ));
+    if (!ok) return;
+    setDepartments((prev) =>
+      prev.map((x) =>
+        x.id === d.id
+          ? { ...x, sort_order: aOrder }
+          : x.id === other.id
+            ? { ...x, sort_order: bOrder }
+            : x,
+      ),
+    );
+  };
+
+  const deleteDepartment = async (d: Department) => {
+    if (departments.some((x) => x.parent_id === d.id)) {
+      return notify("하위 조직이 있는 조직은 삭제할 수 없습니다. 하위 조직을 먼저 정리하세요.");
+    }
+    if (membersOf(d.id).length > 0) {
+      return notify("소속 회원이 있는 조직은 삭제할 수 없습니다. 회원 소속을 먼저 변경하세요.");
+    }
+    const ok = await runDb(
+      supabase.from("departments").delete().eq("id", d.id),
+      notify,
+      "조직 삭제 실패",
+    );
+    if (!ok) return;
+    setDepartments((prev) => prev.filter((x) => x.id !== d.id));
+    onActivity("조직 삭제", `'${d.name}' 조직이 삭제되었습니다.`);
+    notify(`'${d.name}' 조직이 삭제되었습니다.`);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">조직도 관리</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          상위·하위 조직을 구성하고 조직별 소속 회원을 확인합니다. 회원의 소속은 회원 관리에서
+          지정합니다.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+        <ZenithCard className="col-span-full xl:col-span-4 p-6">
+          <div className="flex items-center gap-2.5 pb-4 border-b border-border">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Network className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold">조직 추가</h2>
+              <p className="text-xs text-muted-foreground">상위 조직을 비우면 최상위 조직이 됩니다</p>
+            </div>
+          </div>
+          <form onSubmit={addDepartment} className="mt-5 space-y-4">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium">
+                조직명 <span className="text-destructive">*</span>
+              </label>
+              <input
+                className={inputCls}
+                placeholder="예: 인사팀"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium">상위 조직</label>
+              <select
+                aria-label="상위 조직"
+                className={inputCls}
+                value={parentId}
+                onChange={(e) => setParentId(e.target.value)}
+              >
+                <option value={ROOT_PARENT}>(최상위 조직)</option>
+                <DepartmentOptions departments={departments} />
+              </select>
+            </div>
+            <button
+              type="submit"
+              disabled={saving}
+              className={cn(btnPrimary, "w-full", saving && "opacity-70")}
+            >
+              <Plus className="h-4 w-4" />
+              <span>{saving ? "추가 중..." : "조직 추가"}</span>
+            </button>
+          </form>
+        </ZenithCard>
+
+        <ZenithCard className="col-span-full xl:col-span-8 p-6">
+          <div className="pb-4">
+            <h2 className="text-base font-semibold">조직도 ({departments.length}개 조직)</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              연필 아이콘으로 이름을 바꾸고, 화살표로 같은 단계 안의 순서를 바꿉니다.
+            </p>
+          </div>
+
+          {tree.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              등록된 조직이 없습니다. 왼쪽에서 첫 조직을 추가하세요.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {tree.map(({ dept, depth }) => {
+                const members = membersOf(dept.id);
+                const sibs = siblingsOf(dept);
+                const pos = sibs.findIndex((x) => x.id === dept.id);
+                const blocked = descendantIds(departments, dept.id);
+                return (
+                  <li
+                    key={dept.id}
+                    className="rounded-lg border border-border bg-card px-3 py-2.5"
+                    style={{ marginLeft: depth * 24 }}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Network className="h-4 w-4 shrink-0 text-primary" />
+                      <span className="text-sm font-semibold">{dept.name}</span>
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                        {members.length}명
+                      </span>
+                      <div className="ml-auto flex items-center gap-0.5">
+                        <select
+                          aria-label={`${dept.name} 상위 조직`}
+                          className={cn(inputCls, "h-8 w-36 text-xs")}
+                          value={dept.parent_id ?? ROOT_PARENT}
+                          onChange={(e) => void moveParent(dept, e.target.value || null)}
+                        >
+                          <option value={ROOT_PARENT}>(최상위)</option>
+                          {flattenDepartments(departments)
+                            .filter(({ dept: d }) => !blocked.has(d.id))
+                            .map(({ dept: d, depth: dd }) => (
+                              <option key={d.id} value={d.id}>
+                                {`${"  ".repeat(dd)}${d.name}`}
+                              </option>
+                            ))}
+                        </select>
+                        <button
+                          onClick={() => void swapOrder(dept, -1)}
+                          disabled={pos <= 0}
+                          aria-label={`${dept.name} 위로`}
+                          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-30 cursor-pointer"
+                        >
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => void swapOrder(dept, 1)}
+                          disabled={pos >= sibs.length - 1}
+                          aria-label={`${dept.name} 아래로`}
+                          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-30 cursor-pointer"
+                        >
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        </button>
+                        <InlineNameEdit
+                          value={dept.name}
+                          label={dept.name}
+                          onSave={(next) => renameDepartment(dept, next)}
+                        />
+                        <button
+                          onClick={() => void deleteDepartment(dept)}
+                          aria-label={`${dept.name} 조직 삭제`}
+                          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    {members.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5 pl-6">
+                        {members.map((m) => (
+                          <span
+                            key={m.id}
+                            className="rounded-md border border-border bg-muted/60 px-2 py-0.5 text-[11px]"
+                          >
+                            {m.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </ZenithCard>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 5-3. 계정관리 · 직급 관리
+ * ============================================================================ */
+function PositionsView({
+  positions,
+  setPositions,
+  users,
+  notify,
+  onActivity,
+}: {
+  positions: Position[];
+  setPositions: React.Dispatch<React.SetStateAction<Position[]>>;
+  users: AppUser[];
+  notify: (m: string) => void;
+  onActivity: (title: string, description: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const sorted = [...positions].sort((a, b) => a.rank - b.rank);
+  const membersOf = (id: string) => users.filter((u) => u.position_id === id);
+
+  const addPosition = async (e: FormEvent) => {
+    e.preventDefault();
+    const clean = name.trim();
+    if (!clean) return notify("직급명을 입력해주세요.");
+    if (positions.some((p) => p.name === clean)) return notify("이미 등록된 직급입니다.");
+    const rank = Math.max(0, ...positions.map((p) => p.rank)) + 10;
+
+    setSaving(true);
+    try {
+      const { data, error } = await supabase
+        .from("positions")
+        .insert({ name: clean, rank })
+        .select("id, name, rank")
+        .single();
+      if (error || !data) {
+        return notify(`직급 추가 실패: ${error?.message ?? "알 수 없는 오류"}`);
+      }
+      setPositions((prev) => [...prev, data as Position]);
+      onActivity("직급 추가", `'${clean}' 직급이 추가되었습니다.`);
+      setName("");
+      notify(`'${clean}' 직급이 추가되었습니다.`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renamePosition = async (p: Position, next: string) => {
+    if (positions.some((x) => x.id !== p.id && x.name === next)) {
+      return notify("이미 등록된 직급명입니다.");
+    }
+    const ok = await runDb(
+      supabase.from("positions").update({ name: next }).eq("id", p.id),
+      notify,
+      "직급명 변경 실패",
+    );
+    if (!ok) return;
+    setPositions((prev) => prev.map((x) => (x.id === p.id ? { ...x, name: next } : x)));
+    notify(`'${p.name}' → '${next}' 이름이 변경되었습니다.`);
+  };
+
+  // 위/아래 직급과 서열(rank) 교환
+  const swapRank = async (p: Position, dir: -1 | 1) => {
+    const idx = sorted.findIndex((x) => x.id === p.id);
+    const other = sorted[idx + dir];
+    if (!other) return;
+    const ok =
+      (await runDb(
+        supabase.from("positions").update({ rank: other.rank }).eq("id", p.id),
+        notify,
+        "서열 변경 실패",
+      )) &&
+      (await runDb(
+        supabase.from("positions").update({ rank: p.rank }).eq("id", other.id),
+        notify,
+        "서열 변경 실패",
+      ));
+    if (!ok) return;
+    setPositions((prev) =>
+      prev.map((x) =>
+        x.id === p.id ? { ...x, rank: other.rank } : x.id === other.id ? { ...x, rank: p.rank } : x,
+      ),
+    );
+  };
+
+  const deletePosition = async (p: Position) => {
+    if (membersOf(p.id).length > 0) {
+      return notify("이 직급의 회원이 있어 삭제할 수 없습니다. 회원 직급을 먼저 변경하세요.");
+    }
+    const ok = await runDb(
+      supabase.from("positions").delete().eq("id", p.id),
+      notify,
+      "직급 삭제 실패",
+    );
+    if (!ok) return;
+    setPositions((prev) => prev.filter((x) => x.id !== p.id));
+    onActivity("직급 삭제", `'${p.name}' 직급이 삭제되었습니다.`);
+    notify(`'${p.name}' 직급이 삭제되었습니다.`);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">직급 관리</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          직급과 서열을 관리합니다. 위에 있을수록 높은 직급이며, 회원 목록도 이 순서로 정렬됩니다.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+        <ZenithCard className="col-span-full xl:col-span-4 p-6">
+          <div className="flex items-center gap-2.5 pb-4 border-b border-border">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Award className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold">직급 추가</h2>
+              <p className="text-xs text-muted-foreground">새 직급은 가장 아래 서열로 추가됩니다</p>
+            </div>
+          </div>
+          <form onSubmit={addPosition} className="mt-5 space-y-4">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium">
+                직급명 <span className="text-destructive">*</span>
+              </label>
+              <input
+                className={inputCls}
+                placeholder="예: 과장"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={saving}
+              className={cn(btnPrimary, "w-full", saving && "opacity-70")}
+            >
+              <Plus className="h-4 w-4" />
+              <span>{saving ? "추가 중..." : "직급 추가"}</span>
+            </button>
+          </form>
+        </ZenithCard>
+
+        <ZenithCard className="col-span-full xl:col-span-8 p-6">
+          <div className="pb-4">
+            <h2 className="text-base font-semibold">직급 서열 ({positions.length}개)</h2>
+          </div>
+          {sorted.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              등록된 직급이 없습니다. 왼쪽에서 첫 직급을 추가하세요.
+            </p>
+          ) : (
+            <ol className="space-y-1.5">
+              {sorted.map((p, idx) => {
+                const members = membersOf(p.id);
+                return (
+                  <li
+                    key={p.id}
+                    className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2.5"
+                  >
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">
+                      {idx + 1}
+                    </span>
+                    <span className="text-sm font-semibold">{p.name}</span>
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                      {members.length}명
+                    </span>
+                    {members.length > 0 && (
+                      <span className="truncate text-xs text-muted-foreground">
+                        {members.map((m) => m.name).join(", ")}
+                      </span>
+                    )}
+                    <div className="ml-auto flex items-center gap-0.5">
+                      <button
+                        onClick={() => void swapRank(p, -1)}
+                        disabled={idx === 0}
+                        aria-label={`${p.name} 위로`}
+                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-30 cursor-pointer"
+                      >
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => void swapRank(p, 1)}
+                        disabled={idx === sorted.length - 1}
+                        aria-label={`${p.name} 아래로`}
+                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-30 cursor-pointer"
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                      </button>
+                      <InlineNameEdit
+                        value={p.name}
+                        label={p.name}
+                        onSave={(next) => renamePosition(p, next)}
+                      />
+                      <button
+                        onClick={() => void deletePosition(p)}
+                        aria-label={`${p.name} 직급 삭제`}
+                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
         </ZenithCard>
       </div>
     </div>
@@ -3462,7 +4212,9 @@ function CommandPaletteModal({
     { id: "upload" as ViewId, label: "1. 자료 올리기 (엑셀/CSV)", icon: UploadIcon },
     { id: "kanban" as ViewId, label: "2. 진행상태 (칸반 보드)", icon: KanbanIcon },
     { id: "report" as ViewId, label: "3. 주간업무보고서", icon: FileText },
-    { id: "users" as ViewId, label: "4. 사용자 수동 등록 (관리자)", icon: Users },
+    { id: "members" as ViewId, label: "계정관리 · 회원 관리", icon: Users },
+    { id: "org" as ViewId, label: "계정관리 · 조직도 관리", icon: Network },
+    { id: "positions" as ViewId, label: "계정관리 · 직급 관리", icon: Award },
   ].filter((p) => !query || p.label.toLowerCase().includes(query));
 
   const matchingTasks = tasks

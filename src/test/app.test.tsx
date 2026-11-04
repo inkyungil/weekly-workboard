@@ -21,7 +21,16 @@ vi.mock("@/lib/supabase", async (importOriginal) => {
       then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve(result()).then(resolve, reject),
     };
-    for (const m of ["select", "order", "eq", "upsert", "delete", "single", "maybeSingle"]) {
+    for (const m of [
+      "select",
+      "order",
+      "eq",
+      "update",
+      "upsert",
+      "delete",
+      "single",
+      "maybeSingle",
+    ]) {
       builder[m] = () => builder;
     }
     return builder;
@@ -88,11 +97,24 @@ describe("App (Supabase Auth + Admin Manual Registration + Zenith Jexcel Workboa
     fireEvent.click(screen.getAllByText("샘플 채우기")[0]!);
     fireEvent.click(screen.getByRole("button", { name: "반영하기 (2건)" }));
 
-    // Navigate to Admin Manual User Registration view
-    fireEvent.click(screen.getAllByText("4. 사용자 수동 등록")[0]!);
-    expect(
-      screen.getByRole("heading", { name: "4. 사용자 수동 등록 관리 (관리자 전용)" }),
-    ).toBeInTheDocument();
+    // 계정관리 · 직급 관리에서 직급 추가
+    fireEvent.click(screen.getAllByText("직급 관리")[0]!);
+    expect(window.location.pathname).toBe("/accounts/positions");
+    fireEvent.change(screen.getByPlaceholderText("예: 과장"), { target: { value: "과장" } });
+    fireEvent.click(screen.getByRole("button", { name: "직급 추가" }));
+    expect(await screen.findByRole("button", { name: "과장 직급 삭제" })).toBeInTheDocument();
+
+    // 계정관리 · 조직도 관리에서 조직 추가
+    fireEvent.click(screen.getAllByText("조직도 관리")[0]!);
+    expect(window.location.pathname).toBe("/accounts/org");
+    fireEvent.change(screen.getByPlaceholderText("예: 인사팀"), { target: { value: "인사팀" } });
+    fireEvent.click(screen.getByRole("button", { name: "조직 추가" }));
+    expect(await screen.findByRole("button", { name: "인사팀 조직 삭제" })).toBeInTheDocument();
+
+    // 계정관리 · 회원 관리에서 소속·직급을 지정해 회원 등록
+    fireEvent.click(screen.getAllByText("회원 관리")[0]!);
+    expect(window.location.pathname).toBe("/accounts/members");
+    expect(screen.getByRole("heading", { name: "회원 관리" })).toBeInTheDocument();
 
     // Register a new user manually
     fireEvent.change(screen.getByPlaceholderText("예: honggd"), {
@@ -104,7 +126,8 @@ describe("App (Supabase Auth + Admin Manual Registration + Zenith Jexcel Workboa
     fireEvent.change(screen.getByPlaceholderText("8자 이상"), {
       target: { value: "honggd1234!" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "+ 계정 수동 등록" }));
+    fireEvent.change(screen.getByLabelText("소속 조직"), { target: { value: "usr-new" } });
+    fireEvent.click(screen.getByRole("button", { name: "+ 회원 등록" }));
 
     await waitFor(() => {
       expect(screen.getByText("홍길동")).toBeInTheDocument();

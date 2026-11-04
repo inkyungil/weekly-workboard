@@ -45,12 +45,68 @@ export type AppUser = {
   password?: string;
   name: string;
   department: string;
+  department_id?: string | null;
+  position_id?: string | null;
   role: UserRole;
   is_active: boolean;
   created_by: string;
   created_at: string;
   supabase_synced?: boolean;
 };
+
+// 조직도(부서) — parent_id 로 상하위 트리 구성
+export type Department = {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  sort_order: number;
+};
+
+// 직급 — rank 가 작을수록 높은 직급
+export type Position = {
+  id: string;
+  name: string;
+  rank: number;
+};
+
+// 부서를 트리 순서(부모 → 자식, sort_order 순)로 펼치고 깊이를 함께 반환
+export function flattenDepartments(
+  departments: Department[],
+): { dept: Department; depth: number }[] {
+  const byParent = new Map<string | null, Department[]>();
+  for (const d of departments) {
+    const key = d.parent_id && departments.some((p) => p.id === d.parent_id) ? d.parent_id : null;
+    byParent.set(key, [...(byParent.get(key) ?? []), d]);
+  }
+  const out: { dept: Department; depth: number }[] = [];
+  const walk = (parent: string | null, depth: number) => {
+    const children = (byParent.get(parent) ?? []).sort(
+      (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name),
+    );
+    for (const c of children) {
+      out.push({ dept: c, depth });
+      walk(c.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+}
+
+// 자기 자신과 모든 하위 부서 id (상위 부서 변경 시 순환 방지용)
+export function descendantIds(departments: Department[], id: string): Set<string> {
+  const ids = new Set([id]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const d of departments) {
+      if (d.parent_id && ids.has(d.parent_id) && !ids.has(d.id)) {
+        ids.add(d.id);
+        grew = true;
+      }
+    }
+  }
+  return ids;
+}
 
 export const INITIAL_USERS: AppUser[] = [
   {
@@ -129,42 +185,14 @@ export function saveLocalUsers(users: AppUser[]) {
   }
 }
 
-export const SUPABASE_INIT_SQL = `-- supabase/migrations 의 SQL 을 \`npx supabase db push --remote\` 로 반영하세요.
--- 요약: 비밀번호는 Supabase Auth 에만 저장되며, app_users 는 프로필/권한만 보관합니다.
-create table if not exists public.app_users (
-  id uuid primary key default gen_random_uuid(),
-  auth_user_id uuid unique references auth.users(id) on delete set null,
-  username text unique not null,
-  email text unique not null,
-  name text not null,
-  department text not null default '복리후생/총무',
-  role text not null default '팀원' check (role in ('관리자', '팀원')),
-  is_active boolean not null default true,
-  created_by text not null default 'admin',
-  created_at timestamptz not null default now()
-);
-
-alter table public.app_users enable row level security;
-alter table public.tasks enable row level security;
-
--- 조회: 본인 또는 활성 사용자 / 계정 쓰기: 관리자만 / 업무: 활성 사용자만
-create policy "app_users select" on public.app_users for select to authenticated
-  using (auth_user_id = auth.uid() or public.is_active_member());
-create policy "app_users insert by admin" on public.app_users for insert to authenticated
-  with check (public.is_admin());
-create policy "app_users update by admin" on public.app_users for update to authenticated
-  using (public.is_admin()) with check (public.is_admin());
-create policy "app_users delete by admin" on public.app_users for delete to authenticated
-  using (public.is_admin());
-create policy "tasks for active members" on public.tasks for all to authenticated
-  using (public.is_active_member()) with check (public.is_active_member());`;
-
 type AppUserRow = {
   id: string;
   username: string;
   email: string;
   name: string;
   department: string | null;
+  department_id?: string | null;
+  position_id?: string | null;
   role: string | null;
   is_active: boolean | null;
   created_by: string | null;
@@ -178,6 +206,8 @@ export function mapAppUserRow(u: AppUserRow): AppUser {
     email: String(u.email),
     name: String(u.name),
     department: String(u.department || "복리후생/총무"),
+    department_id: u.department_id ?? null,
+    position_id: u.position_id ?? null,
     role: (u.role as UserRole) || "팀원",
     is_active: Boolean(u.is_active ?? true),
     created_by: String(u.created_by || "admin"),
