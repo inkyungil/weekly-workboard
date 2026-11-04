@@ -3081,17 +3081,26 @@ function UploadView({
       );
       if (!ok) return;
       const ids = includedFiles.map((f) => f.id);
-      const now = new Date().toISOString();
-      const marked = await runDb(
-        supabase.from("upload_files").update({ applied_at: now }).in("id", ids),
-        notify,
-        "파일 반영 표시 실패",
-      );
-      if (marked) {
+      // 반영 시각은 서버가 기록 — 돌려받은 시각으로 목록 갱신 ('반영 후 수정됨' 판단을 같은 시계로)
+      const { data: marked, error: markErr } = await supabase
+        .from("upload_files")
+        .update({ applied_at: new Date().toISOString() })
+        .in("id", ids)
+        .select("id, applied_at, updated_at");
+      if (markErr) {
+        notify(`파일 반영 표시 실패: ${markErr.message}`);
+      } else {
+        const times = new Map(
+          ((marked ?? []) as Pick<UploadFile, "id" | "applied_at" | "updated_at">[]).map((m) => [
+            m.id,
+            m,
+          ]),
+        );
         setFiles((prev) =>
-          (prev ?? []).map((f) =>
-            ids.includes(f.id) ? { ...f, applied_at: now, updated_at: now } : f,
-          ),
+          (prev ?? []).map((f) => {
+            const t = times.get(f.id);
+            return t ? { ...f, applied_at: t.applied_at, updated_at: t.updated_at } : f;
+          }),
         );
         setIncluded(new Set());
       }

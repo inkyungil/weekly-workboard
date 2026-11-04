@@ -3,19 +3,26 @@ import { describe, expect, it, vi } from "vitest";
 
 import App from "@/App";
 
-// 실제 Supabase 대신 쓰는 테스트용 클라이언트 — 세션 없음, 로그인 성공, 조회 결과 비어 있음, insert 는 받은 행을 그대로 반환
+// 실제 Supabase 대신 쓰는 테스트용 클라이언트 — 세션 없음, 로그인 성공, 조회 결과 비어 있음, insert·update 는 받은 값을 그대로 반환
 vi.mock("@/lib/supabase", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/supabase")>();
 
   const queryBuilder = () => {
     let inserted: Record<string, unknown> | null = null;
+    let patch: Record<string, unknown> | null = null;
     const result = () =>
       inserted
         ? { data: { id: "usr-new", created_at: "2026-11-04", ...inserted }, error: null }
-        : { data: [], error: null };
+        : patch
+          ? { data: [{ id: "usr-new", updated_at: "2026-11-04T00:00:00Z", ...patch }], error: null }
+          : { data: [], error: null };
     const builder: Record<string, unknown> = {
       insert: (row: Record<string, unknown>) => {
         inserted = row;
+        return builder;
+      },
+      update: (row: Record<string, unknown>) => {
+        patch = row;
         return builder;
       },
       then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
@@ -30,7 +37,6 @@ vi.mock("@/lib/supabase", async (importOriginal) => {
       "gte",
       "in",
       "limit",
-      "update",
       "upsert",
       "delete",
       "single",
@@ -135,6 +141,7 @@ describe("App (Supabase Auth + Admin Manual Registration + 업무보고 Jexcel W
     fireEvent.click(screen.getByRole("button", { name: "2행 삭제" }));
     fireEvent.click(screen.getByRole("button", { name: "반영하기 (1건)" }));
     expect(await screen.findByText(/반영됨/)).toBeInTheDocument();
+    expect(screen.queryByText("반영 후 수정됨")).not.toBeInTheDocument();
 
     // 계정관리 · 직급 관리에서 직급 추가
     fireEvent.click(screen.getAllByText("직급 관리")[0]!);
