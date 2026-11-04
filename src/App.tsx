@@ -619,7 +619,8 @@ function Workboard() {
       notify(`업무 저장 실패: ${error.message}`);
       return false;
     }
-    setTasks((prev) => prev.map((t) => (t.id === task.id ? task : t)));
+    const saved = { ...task, updated_at: new Date().toISOString() };
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? saved : t)));
     notify(`'${task.title}' 업무가 저장되었습니다.`);
     return true;
   };
@@ -645,9 +646,10 @@ function Workboard() {
     }
     const existingIds = new Set(tasks.map((t) => t.id));
     const updatedCount = incoming.filter((t) => existingIds.has(t.id)).length;
-    const byId = new Map(incoming.map((t) => [t.id, t]));
+    const now = new Date().toISOString();
+    const byId = new Map(incoming.map((t) => [t.id, { ...t, updated_at: now }]));
     setTasks((prev) => [
-      ...incoming.filter((t) => !prev.some((p) => p.id === t.id)),
+      ...incoming.filter((t) => !prev.some((p) => p.id === t.id)).map((t) => byId.get(t.id)!),
       ...prev.map((t) => byId.get(t.id) ?? t),
     ]);
     addActivity({
@@ -2702,7 +2704,17 @@ const STATUS_SOURCE_STYLE: Record<RowAnalysis["statusSource"], string> = {
   입력: "border-border bg-muted text-muted-foreground",
   추정: "border-primary/25 bg-primary/10 text-primary",
   기본값: "border-warning/30 bg-warning/10 text-warning-foreground dark:text-warning",
+  "기존 유지": "border-border bg-card text-muted-foreground",
   "마감 초과": "border-destructive/30 bg-destructive/10 text-destructive",
+};
+
+const UPLOAD_FIELD_LABELS: Record<string, string> = {
+  field: "분야",
+  owner: "담당자",
+  due: "기한",
+  status: "상태",
+  progress: "추진현황",
+  issue: "이슈",
 };
 
 function UploadView({
@@ -2721,6 +2733,7 @@ function UploadView({
   const [curSheetRows, setCurSheetRows] = useState<SheetRow[]>(() => createEmptySheetRows(8));
   const [prevSheetRows, setPrevSheetRows] = useState<SheetRow[]>(() => createEmptySheetRows(8));
   const [markOverdue, setMarkOverdue] = useState(true);
+  const [overwriteConflicts, setOverwriteConflicts] = useState(false);
   const [applying, setApplying] = useState(false);
   // 지난주 엑셀표가 비어 있으면 지난주 확정 보고서(DB)를 비교 기준으로 사용
   const [lastConfirmed, setLastConfirmed] = useState<TaskLike[] | null>(null);
@@ -2835,10 +2848,21 @@ function UploadView({
   const prevDrafts = useMemo(() => sheetRowsToDrafts(prevSheetRows), [prevSheetRows]);
   const memberNames = useMemo(() => users.filter((u) => u.is_active).map((u) => u.name), [users]);
 
+  // 이번 주(월요일 0시) 이후 시스템에서 고친 업무는 파일 값으로 덮어쓰지 않음
+  const protectSince = useMemo(() => new Date(`${weekStartOf()}T00:00:00`).toISOString(), []);
   const analysis = useMemo(
-    () => analyzeDrafts(curDrafts, { existing: tasks, memberNames, today, markOverdue }),
-    [curDrafts, tasks, memberNames, today, markOverdue],
+    () =>
+      analyzeDrafts(curDrafts, {
+        existing: tasks,
+        memberNames,
+        today,
+        markOverdue,
+        protectSince,
+        overwriteConflicts,
+      }),
+    [curDrafts, tasks, memberNames, today, markOverdue, protectSince, overwriteConflicts],
   );
+  const conflictRows = analysis.filter((r) => r.conflicts.length > 0);
   const previewTasks = useMemo(
     () => analysisToTasks<TaskLike>(analysis, () => ({ id: "", code: "" })),
     [analysis],
@@ -2873,6 +2897,8 @@ function UploadView({
     defaulted: analysis.filter((r) => r.statusSource === "기본값").length,
     overdue: analysis.filter((r) => r.overdue).length,
     unknownOwner: analysis.filter((r) => r.unknownOwner).length,
+    keptBlank: analysis.reduce((n, r) => n + r.keptBlank, 0),
+    conflicts: analysis.reduce((n, r) => n + r.conflicts.length, 0),
   };
 
   const apply = async () => {
@@ -2965,7 +2991,7 @@ function UploadView({
             <h2 className="text-base font-semibold">자동 분석 결과 (규칙 기반)</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
               상태가 비어 있으면 추진현황·이슈 문구로 추정하고, 같은 업무명·담당자의 기존 업무는
-              새로 만들지 않고 갱신합니다.
+              새로 만들지 않고 갱신합니다. 파일의 빈 칸은 기존 값을 지우지 않습니다.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -2977,6 +3003,15 @@ function UploadView({
                 className="h-4 w-4 accent-primary"
               />
               마감 지난 미완료 업무를 &lsquo;지연 / 이슈&rsquo;로 반영
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-medium">
+              <input
+                type="checkbox"
+                checked={overwriteConflicts}
+                onChange={(e) => setOverwriteConflicts(e.target.checked)}
+                className="h-4 w-4 accent-primary"
+              />
+              이번 주에 시스템에서 고친 칸도 파일 값으로 덮어쓰기
             </label>
             <button
               onClick={() => void apply()}
@@ -3010,6 +3045,11 @@ function UploadView({
                 [`상태 없음→대기 ${counts.defaulted}건`, STATUS_SOURCE_STYLE["기본값"]],
                 [`마감 초과 ${counts.overdue}건`, STATUS_SOURCE_STYLE["마감 초과"]],
                 [`미등록 담당자 ${counts.unknownOwner}건`, STATUS_SOURCE_STYLE["기본값"]],
+                [`빈 칸 → 기존 값 유지 ${counts.keptBlank}칸`, STATUS_SOURCE_STYLE["기존 유지"]],
+                [
+                  `충돌(시스템 값 유지) ${counts.conflicts}칸`,
+                  "border-warning/30 bg-warning/10 text-warning-foreground dark:text-warning",
+                ],
               ].map(([label, cls]) => (
                 <span
                   key={label}
@@ -3048,7 +3088,7 @@ function UploadView({
                       </td>
                       <td className="px-3 py-2 font-medium">{r.draft.title}</td>
                       <td className="px-3 py-2">
-                        {r.draft.owner || "미지정"}
+                        {r.final.owner || "미지정"}
                         {r.unknownOwner && (
                           <span className="ml-1 text-[11px] font-semibold text-warning-foreground dark:text-warning">
                             (회원 명단에 없음)
@@ -3056,7 +3096,7 @@ function UploadView({
                         )}
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
-                        {r.draft.due || "-"}
+                        {r.final.due || "-"}
                         {r.overdue && (
                           <span className="ml-1 text-[11px] font-semibold text-destructive">
                             마감 초과
@@ -3089,6 +3129,7 @@ function UploadView({
                           {r.statusSource === "추정" && "문구로 추정"}
                           {r.statusSource === "기본값" && "상태 없음 → 대기"}
                           {r.statusSource === "마감 초과" && "기한 지남 → 지연"}
+                          {r.statusSource === "기존 유지" && "기존 상태 유지"}
                         </span>
                       </td>
                     </tr>
@@ -3096,6 +3137,42 @@ function UploadView({
                 </tbody>
               </table>
             </div>
+
+            {conflictRows.length > 0 && (
+              <div className="overflow-x-auto rounded-lg border border-warning/30">
+                <p className="border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs font-semibold">
+                  충돌 — 이번 주에 시스템(칸반 등)에서 이미 고친 칸이라 시스템 값을 지켰습니다. 파일
+                  값으로 바꾸려면 위의 &lsquo;덮어쓰기&rsquo;를 켜세요.
+                </p>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border text-muted-foreground">
+                      <th className="px-3 py-2 text-start">업무</th>
+                      <th className="px-3 py-2 text-start">항목</th>
+                      <th className="px-3 py-2 text-start">지킨 값 (시스템)</th>
+                      <th className="px-3 py-2 text-start">버린 값 (파일)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {conflictRows.flatMap((r) =>
+                      r.conflicts.map((c) => (
+                        <tr
+                          key={`${r.draft.title}-${c.field}`}
+                          className="border-b border-border/50 last:border-0"
+                        >
+                          <td className="px-3 py-2 font-medium">{r.draft.title}</td>
+                          <td className="px-3 py-2">{UPLOAD_FIELD_LABELS[c.field]}</td>
+                          <td className="px-3 py-2">{c.kept || "(빈 값)"}</td>
+                          <td className="px-3 py-2 text-muted-foreground line-through">
+                            {c.incoming}
+                          </td>
+                        </tr>
+                      )),
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             <WeekComparisonPanel comparison={comparison} baselineLabel={baseline?.label ?? null} />
           </>

@@ -14,6 +14,7 @@ export type TaskLike = {
   status: string;
   progress: string;
   issue: string;
+  updated_at?: string;
 };
 
 export const DRAFT_KEYS = [
@@ -199,51 +200,116 @@ export function inferStatus(progress: string, issue: string): Status | null {
 
 /* ---------------------------------------------------------- 행 분석 */
 
-export type StatusSource = "입력" | "추정" | "기본값" | "마감 초과";
+export type StatusSource = "입력" | "추정" | "기본값" | "기존 유지" | "마감 초과";
+
+// 기존 업무와 병합할 때 파일 값으로 바꾸지 않는 칸
+export type UploadConflict = {
+  field: Exclude<DraftKey, "title">;
+  kept: string; // 지킨 값 (시스템)
+  incoming: string; // 버린 값 (파일)
+};
 
 export type RowAnalysis = {
-  draft: Draft;
+  draft: Draft; // 파일에서 읽은 값
+  final: Draft; // 기존 업무와 병합한 뒤 저장할 값
   status: Status;
   statusSource: StatusSource;
   overdue: boolean;
   matched: TaskLike | null; // 같은 업무명·담당자의 기존 업무
   unknownOwner: boolean; // 회원 명단에 없는 담당자
+  keptBlank: number; // 파일이 비어 있어 기존 값을 유지한 칸 수
+  conflicts: UploadConflict[]; // 이번 주 시스템에서 고친 값을 지킨 칸
 };
 
 const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
 export const taskKey = (t: { title: string; owner: string }) => `${norm(t.title)}|${norm(t.owner)}`;
 
+const MERGE_KEYS = ["field", "owner", "due", "progress", "issue"] as const;
+
+// 병합 규칙 (기존 업무와 같은 업무명·담당자일 때)
+//  - 파일의 빈 칸은 기존 값을 지우지 않음
+//  - 기존 업무가 protectSince 이후(이번 주) 시스템에서 수정됐고 값이 다르면 시스템 값을 지키고 충돌로 보고
+//    (overwriteConflicts 가 true 면 파일 값으로 덮어씀)
+//  - 상태: 파일 값 → 파일 추진현황·이슈 문구로 추정 → 기존 상태 순
 export function analyzeDrafts(
   drafts: Draft[],
-  opts: { existing: TaskLike[]; memberNames: string[]; today?: string; markOverdue: boolean },
+  opts: {
+    existing: TaskLike[];
+    memberNames: string[];
+    today?: string;
+    markOverdue: boolean;
+    protectSince?: string; // ISO 시각 — 이 시각 이후 수정된 기존 업무는 보호
+    overwriteConflicts?: boolean;
+  },
 ): RowAnalysis[] {
   const today = opts.today ?? todayIso();
   const byKey = new Map(opts.existing.map((t) => [taskKey(t), t]));
   const members = new Set(opts.memberNames.map(norm));
+  const protectTime = opts.protectSince ? new Date(opts.protectSince).getTime() : NaN;
 
   return drafts.map((draft) => {
+    const matched = byKey.get(taskKey(draft)) ?? null;
+    const updatedTime = matched?.updated_at ? new Date(matched.updated_at).getTime() : NaN;
+    const isProtected =
+      !opts.overwriteConflicts && !Number.isNaN(protectTime) && updatedTime >= protectTime;
+
+    const final: Draft = { ...draft };
+    const conflicts: UploadConflict[] = [];
+    let keptBlank = 0;
+
+    if (matched) {
+      for (const k of MERGE_KEYS) {
+        const incoming = draft[k].trim();
+        const existing = (matched[k] ?? "").trim();
+        if (!incoming) {
+          final[k] = existing;
+          if (existing) keptBlank++;
+        } else if (incoming !== existing && existing && isProtected) {
+          final[k] = existing;
+          conflicts.push({ field: k, kept: existing, incoming });
+        }
+      }
+    }
+
     let status: Status;
     let statusSource: StatusSource;
+    const guess = inferStatus(draft.progress, draft.issue);
     if ((STATUSES as readonly string[]).includes(draft.status)) {
       status = draft.status as Status;
       statusSource = "입력";
+    } else if (guess) {
+      status = guess;
+      statusSource = "추정";
+    } else if (matched && (STATUSES as readonly string[]).includes(matched.status)) {
+      status = matched.status as Status;
+      statusSource = "기존 유지";
     } else {
-      const guess = inferStatus(draft.progress, draft.issue);
-      status = guess ?? "대기";
-      statusSource = guess ? "추정" : "기본값";
+      status = "대기";
+      statusSource = "기본값";
     }
-    const overdue = isOverdue({ due: draft.due, status }, today);
+    if (matched && isProtected && statusSource !== "기존 유지" && status !== matched.status) {
+      conflicts.push({ field: "status", kept: matched.status, incoming: status });
+      status = matched.status as Status;
+      statusSource = "기존 유지";
+    }
+    final.status = status;
+
+    const overdue = isOverdue({ due: final.due, status }, today);
     if (overdue && opts.markOverdue && status !== "지연 / 이슈") {
       status = "지연 / 이슈";
       statusSource = "마감 초과";
+      final.status = status;
     }
     return {
       draft,
+      final,
       status,
       statusSource,
       overdue,
-      matched: byKey.get(taskKey(draft)) ?? null,
-      unknownOwner: draft.owner !== "" && members.size > 0 && !members.has(norm(draft.owner)),
+      matched,
+      unknownOwner: final.owner !== "" && members.size > 0 && !members.has(norm(final.owner)),
+      keptBlank,
+      conflicts,
     };
   });
 }
@@ -258,13 +324,13 @@ export function analysisToTasks<T extends TaskLike>(
     return {
       id,
       code,
-      field: r.draft.field || r.matched?.field || "",
-      title: r.draft.title,
-      owner: r.draft.owner || r.matched?.owner || "미지정",
-      due: r.draft.due || r.matched?.due || "",
+      field: r.final.field,
+      title: r.final.title,
+      owner: r.final.owner || "미지정",
+      due: r.final.due,
       status: r.status,
-      progress: r.draft.progress,
-      issue: r.draft.issue,
+      progress: r.final.progress,
+      issue: r.final.issue,
     } as T;
   });
 }

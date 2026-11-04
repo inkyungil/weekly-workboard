@@ -155,6 +155,77 @@ describe("행 분석", () => {
   });
 });
 
+describe("업로드 덮어쓰기 규칙", () => {
+  const base = task({
+    id: "old-1",
+    status: "진행 중",
+    progress: "1차 실사",
+    issue: "부품 지연",
+    due: "2026-11-20",
+    updated_at: "2026-10-30T10:00:00", // 지난주 수정
+  });
+  const opts = {
+    memberNames: [],
+    today: "2026-11-04",
+    markOverdue: true,
+    protectSince: "2026-11-02T00:00:00",
+  };
+
+  it("파일의 빈 칸은 기존 값을 지우지 않는다", () => {
+    const [r] = analyzeDrafts([draft({ due: "", progress: "", issue: "" })], {
+      ...opts,
+      existing: [base],
+    });
+    expect(r!.final).toMatchObject({ due: "2026-11-20", progress: "1차 실사", issue: "부품 지연" });
+    expect(r!.keptBlank).toBe(3);
+    expect(r).toMatchObject({ status: "진행 중", statusSource: "기존 유지" });
+  });
+
+  it("지난주에 수정된 업무는 파일 값으로 갱신한다", () => {
+    const [r] = analyzeDrafts([draft({ progress: "2차 실사 완료", status: "완료" })], {
+      ...opts,
+      existing: [base],
+    });
+    expect(r!.conflicts).toEqual([]);
+    expect(r!.final.progress).toBe("2차 실사 완료");
+    expect(r!.status).toBe("완료");
+  });
+
+  it("이번 주 시스템에서 고친 칸은 지키고 충돌로 보고한다 (빈 칸 채우기는 그대로)", () => {
+    const edited = { ...base, issue: "", updated_at: "2026-11-03T15:00:00" };
+    const [r] = analyzeDrafts(
+      [draft({ due: "2026-11-20", progress: "파일 내용", status: "완료", issue: "새 이슈" })],
+      { ...opts, existing: [edited] },
+    );
+    expect(r!.conflicts).toEqual([
+      { field: "progress", kept: "1차 실사", incoming: "파일 내용" },
+      { field: "status", kept: "진행 중", incoming: "완료" },
+    ]);
+    expect(r!.final).toMatchObject({ progress: "1차 실사", issue: "새 이슈" });
+    expect(r).toMatchObject({ status: "진행 중", statusSource: "기존 유지" });
+  });
+
+  it("덮어쓰기를 켜면 이번 주에 고친 칸도 파일 값으로", () => {
+    const edited = { ...base, updated_at: "2026-11-03T15:00:00" };
+    const [r] = analyzeDrafts([draft({ progress: "파일 내용" })], {
+      ...opts,
+      existing: [edited],
+      overwriteConflicts: true,
+    });
+    expect(r!.conflicts).toEqual([]);
+    expect(r!.final.progress).toBe("파일 내용");
+  });
+
+  it("상태 칸이 비면 파일 추진현황 문구로 추정하고, 문구도 없으면 기존 상태", () => {
+    const [guessed, kept] = analyzeDrafts(
+      [draft({ progress: "실사 완료" }), draft({ title: "검진", progress: "" })],
+      { ...opts, existing: [base, task({ id: "old-2", title: "검진", status: "대기" })] },
+    );
+    expect(guessed).toMatchObject({ status: "완료", statusSource: "추정" });
+    expect(kept).toMatchObject({ status: "대기", statusSource: "기존 유지" });
+  });
+});
+
 describe("지난주 대비", () => {
   it("신규 · 완료됨 · 이월 · 상태 변화 · 진척 없음 · 사라짐", () => {
     const prev = [
