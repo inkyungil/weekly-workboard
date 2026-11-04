@@ -141,21 +141,62 @@ function Login({ onLogin }: { onLogin: () => void }) {
   );
 }
 
-function Upload({ onAdd }: { onAdd: (t: Task[]) => void }) {
-  const [a, setA] = useState("");
-  const [b, setB] = useState("");
-  const box = (title: string, v: string, set: (s: string) => void) => (
+async function readFiles(files: File[]) {
+  const XLSX = await import("xlsx");
+  const cur: Task[] = [];
+  const prev: Task[] = [];
+  for (const file of files) {
+    const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false });
+    for (const name of wb.SheetNames) {
+      const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name], { header: 1, raw: false, defval: "" });
+      const tsv = rows.map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " ")).join("\t")).join("\n");
+      (name.includes("지난주") ? prev : cur).push(...parsePaste(tsv));
+    }
+  }
+  return { cur, prev };
+}
+
+function DropZone({ title, hint, onFiles }: { title: string; hint: string; onFiles: (f: File[]) => void }) {
+  const [over, setOver] = useState(false);
+  const [names, setNames] = useState<string[]>([]);
+  const handle = (list: FileList | null) => {
+    const f = Array.from(list ?? []).filter((x) => /\.(xlsx|xls|csv)$/i.test(x.name));
+    if (!f.length) return;
+    setNames(f.map((x) => x.name));
+    onFiles(f);
+  };
+  return (
     <Card>
       <h2 className="font-semibold">{title}</h2>
-      <p className="mt-1 text-xs text-muted-foreground">열 순서: 분야 · 업무명 · 담당자 · 기한 · 상태 · 추진현황 · 이슈 (엑셀에서 복사 후 붙여넣기)</p>
-      <textarea className={`${inputCls} mt-3 h-56 font-mono`} value={v} onChange={(e) => set(e.target.value)} placeholder={"복리후생/총무\t사내 동호회 지원\t홍길동\t2026-11-15\t진행 중\t신청 접수 중\t"} />
-      <button className={`${btnPrimary} mt-3`} onClick={() => { const r = parsePaste(v); if (r.length) { onAdd(r); set(""); } }}>반영하기</button>
+      <label
+        onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => { e.preventDefault(); setOver(false); handle(e.dataTransfer.files); }}
+        className={`mt-3 flex h-48 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-4 text-center transition-colors ${over ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted"}`}>
+        <input type="file" multiple accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => { handle(e.target.files); e.target.value = ""; }} />
+        <span className="text-3xl">📂</span>
+        <p className="mt-2 text-sm font-medium">업무일지 파일을 끌어다 놓거나 눌러서 고르세요</p>
+        <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
+      </label>
+      {names.length > 0 && <ul className="mt-3 space-y-1 text-xs text-muted-foreground">{names.map((n) => <li key={n}>📄 {n}</li>)}</ul>}
     </Card>
   );
+}
+
+function Upload({ onAdd }: { onAdd: (t: Task[]) => void }) {
+  const run = async (files: File[], forcePrev: boolean) => {
+    const { cur, prev } = await readFiles(files);
+    const all = forcePrev ? [...cur, ...prev] : [...cur, ...prev];
+    if (all.length) onAdd(all);
+  };
   return (
     <div className="space-y-4">
       <p className="rounded-md border border-success/30 bg-success/10 px-4 py-2 text-sm text-success">🔒 데이터는 외부 서버로 전송되지 않고 브라우저 내에서만 안전하게 처리됩니다.</p>
-      <div className="grid gap-4 md:grid-cols-2">{box("이번 주 업무일지 붙여넣기", a, setA)}{box("지난주 보고서 붙여넣기", b, setB)}</div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <DropZone title="이번 주 업무일지 (팀원별 파일 여러 개 가능)" hint="「지난주」 이름의 시트가 함께 있으면 지난주 보고서로 읽습니다" onFiles={(f) => run(f, false)} />
+        <DropZone title="지난주 보고서" hint="엑셀(.xlsx, .xls) 또는 CSV 파일" onFiles={(f) => run(f, true)} />
+      </div>
+      <p className="text-xs text-muted-foreground">열 순서: 분야 · 업무명 · 담당자 · 기한 · 상태 · 추진현황 · 이슈</p>
     </div>
   );
 }
