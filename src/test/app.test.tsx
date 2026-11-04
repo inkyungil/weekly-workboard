@@ -54,11 +54,12 @@ vi.mock("@/lib/supabase", async (importOriginal) => {
   };
 });
 
-describe("App (Supabase Auth + Admin Manual Registration + Zenith Jexcel Workboard)", () => {
-  it("renders the login screen first with Zenith 주간업무 보고서 branding and admin-only registration policy", async () => {
+describe("App (Supabase Auth + Admin Manual Registration + 업무보고 Jexcel Workboard)", () => {
+  it("renders the login screen first with 업무보고 branding and admin-only registration policy", async () => {
     render(<App />);
 
-    expect(await screen.findByText("주간업무 보고서")).toBeInTheDocument();
+    expect(await screen.findByText("업무보고")).toBeInTheDocument();
+    expect(screen.getByText("주간업무 보고서")).toBeInTheDocument();
     expect(screen.getByText("업무관리 시스템 로그인")).toBeInTheDocument();
     expect(screen.getByText("회원가입 안내 (관리자 수동 등록 전용)")).toBeInTheDocument();
   });
@@ -69,6 +70,37 @@ describe("App (Supabase Auth + Admin Manual Registration + Zenith Jexcel Workboa
 
     expect(await screen.findByText("업무관리 시스템 로그인")).toBeInTheDocument();
     await waitFor(() => expect(window.location.pathname).toBe("/login"));
+  });
+
+  it("칸반 카드를 눌러 편집 창에서 추진현황을 고치면 카드에 반영된다", async () => {
+    window.history.pushState({}, "", "/kanban");
+    render(<App />);
+    fireEvent.change(await screen.findByPlaceholderText("예: admin"), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("••••"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "로그인" }));
+
+    // 로그인 직후 원래 가려던 /kanban 으로 돌아옴 (대시보드 차트 렌더링이 느려 대기 시간을 넉넉히)
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "동계 콘도 추첨 시스템 오픈 편집" },
+        { timeout: 4000 },
+      ),
+    );
+    expect(window.location.pathname).toBe("/kanban");
+    const dialog = await screen.findByRole("dialog", { name: "업무 편집" });
+    expect(dialog).toHaveTextContent("주차별 기록");
+    fireEvent.change(screen.getByLabelText(/추진현황/), {
+      target: { value: "인증 오류 해결, 재오픈 완료" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "업무 편집" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("인증 오류 해결, 재오픈 완료")).toBeInTheDocument();
   });
 
   it("logs in as admin, checks Jexcel sheets in Upload view, and registers a user manually", async () => {

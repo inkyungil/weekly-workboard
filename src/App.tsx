@@ -541,8 +541,8 @@ function Workboard() {
 
   useEffect(() => {
     document.title = isLoggedIn
-      ? `${VIEW_TITLES[activeView]} · Zenith 주간업무 보고서`
-      : "로그인 · Zenith 주간업무 보고서";
+      ? `${VIEW_TITLES[activeView]} · 업무보고`
+      : "로그인 · 업무보고";
   }, [isLoggedIn, activeView]);
 
   // Apply Zenith theme / preset / density to <html>
@@ -610,6 +610,19 @@ function Workboard() {
     } catch {
       // ignore if table not yet migrated
     }
+  };
+
+  // 칸반 편집 창 저장 — DB 저장이 성공해야 화면에 반영
+  const saveTask = async (task: Task): Promise<boolean> => {
+    const { updated_at: _u, ...row } = task;
+    const { error } = await supabase.from("tasks").upsert(row);
+    if (error) {
+      notify(`업무 저장 실패: ${error.message}`);
+      return false;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? task : t)));
+    notify(`'${task.title}' 업무가 저장되었습니다.`);
+    return true;
   };
 
   // 업로드 분석 결과 반영 — 같은 id 는 갱신, 나머지는 추가. DB 저장에 실패하면 화면도 바꾸지 않음
@@ -788,7 +801,7 @@ function Workboard() {
         {!isCollapsed && (
           <div className="flex flex-col overflow-hidden">
             <span className="truncate text-sm font-bold tracking-tight text-sidebar-foreground">
-              Zenith
+              업무보고
             </span>
             <span className="truncate text-[10px] font-medium uppercase tracking-widest text-sidebar-foreground/40">
               주간업무 보고서
@@ -1021,7 +1034,7 @@ function Workboard() {
                       <Layers className="h-4 w-4 text-primary-foreground" />
                     </div>
                     <div className="flex flex-col">
-                      <span className="text-sm font-bold leading-none tracking-tight">Zenith</span>
+                      <span className="text-sm font-bold leading-none tracking-tight">업무보고</span>
                       <span className="mt-0.5 text-[10px] font-medium text-muted-foreground">
                         주간업무 보고서
                       </span>
@@ -1083,7 +1096,7 @@ function Workboard() {
                 <button
                   onClick={() => setCustomizerOpen(true)}
                   aria-label="테마 커스터마이즈"
-                  title="Zenith 테마 커스터마이저"
+                  title="테마 커스터마이저"
                   className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
                 >
                   <SlidersHorizontal className="h-4 w-4" />
@@ -1360,9 +1373,11 @@ function Workboard() {
               <KanbanView
                 tasks={tasks}
                 setTasks={setTasks}
+                users={users}
                 notify={notify}
                 onOpenNewTask={() => setNewTaskModalOpen(true)}
                 onSyncTask={syncTaskToSupabase}
+                onSaveTask={saveTask}
               />
             )}
             {activeView === "report" && (
@@ -1578,7 +1593,7 @@ export function Login({
               <Layers className="h-4 w-4 text-primary-foreground" />
             </div>
             <div>
-              <span className="text-sm font-bold tracking-tight">Zenith</span>
+              <span className="text-sm font-bold tracking-tight">업무보고</span>
               <span className="block text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
                 주간업무 보고서
               </span>
@@ -3165,16 +3180,29 @@ function TaskCard({
   editable,
   trailWeeks,
   onDelete,
+  onOpen,
 }: {
   card: BoardCard;
   editable: boolean;
   trailWeeks?: string[] | undefined;
   onDelete?: () => void;
+  onOpen?: () => void;
 }) {
   return (
     <div
       draggable={editable}
       onDragStart={editable ? (e) => e.dataTransfer.setData("text/plain", card.id) : undefined}
+      onClick={editable ? onOpen : undefined}
+      onKeyDown={
+        editable && onOpen
+          ? (e) => {
+              if (e.key === "Enter") onOpen();
+            }
+          : undefined
+      }
+      role={editable ? "button" : undefined}
+      tabIndex={editable ? 0 : undefined}
+      aria-label={editable ? `${card.title} 편집` : undefined}
       className={cn(
         "group rounded-xl border border-border bg-card p-3.5 shadow-2xs transition-all duration-200 hover:border-primary/30 hover:shadow-md",
         editable && "cursor-grab active:cursor-grabbing",
@@ -3201,7 +3229,10 @@ function TaskCard({
         )}
         {editable && onDelete && (
           <button
-            onClick={onDelete}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
             aria-label="업무 삭제"
             className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
           >
@@ -3263,20 +3294,354 @@ const historyToTask = (s: WeeklyState): Task => ({
   issue: s.issue,
 });
 
+// 칸반 카드 편집 창 (Jira 이슈 화면 형태) — 왼쪽 본문(업무명·추진현황·이슈·주차별 기록), 오른쪽 세부 정보
+function TaskEditModal({
+  task,
+  fields,
+  memberNames,
+  onClose,
+  onSave,
+  onDelete,
+}: {
+  task: Task;
+  fields: string[];
+  memberNames: string[];
+  onClose: () => void;
+  onSave: (t: Task) => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
+  const [f, setF] = useState<Task>(task);
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [history, setHistory] = useState<WeeklyState[] | null>(null);
+  const set = <K extends keyof Task>(k: K, v: Task[K]) => setF((prev) => ({ ...prev, [k]: v }));
+
+  const keys = ["field", "title", "owner", "due", "status", "progress", "issue"] as const;
+  const dirty = keys.some((k) => (f[k] ?? "").trim() !== (task[k] ?? "").trim());
+  const unknownOwner =
+    f.owner.trim() !== "" && memberNames.length > 0 && !memberNames.includes(f.owner.trim());
+
+  // 이 업무의 주차별 기록 (Jira 활동 내역처럼 최신 주부터)
+  useEffect(() => {
+    let alive = true;
+    supabase
+      .from("task_weekly_states")
+      .select("*")
+      .eq("task_id", task.id)
+      .order("week_start", { ascending: false })
+      .then(({ data, error }) => {
+        if (alive) setHistory(error || !Array.isArray(data) ? [] : (data as WeeklyState[]));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [task.id]);
+
+  const save = async () => {
+    if (!f.title.trim()) return;
+    setSaving(true);
+    try {
+      await onSave({
+        ...f,
+        field: f.field.trim(),
+        title: f.title.trim(),
+        owner: f.owner.trim() || "미지정",
+        progress: f.progress.trim(),
+        issue: f.issue.trim(),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const sectionLabel = "mb-1.5 block text-xs font-semibold text-muted-foreground";
+  const detailRow = "grid grid-cols-[72px_1fr] items-center gap-2";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-xs sm:items-center"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="업무 편집"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && dirty) void save();
+        }}
+        className="w-full max-w-5xl"
+      >
+        <ZenithCard className="overflow-hidden p-0 shadow-xl">
+          {/* 상단 바: 분야 / 업무코드 · 닫기 */}
+          <div className="flex items-center justify-between gap-3 border-b border-border px-6 py-3">
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span>{task.field || "미분류"}</span>
+              <ChevronRight className="h-3 w-3" />
+              <span className="font-semibold text-foreground">{task.code}</span>
+            </p>
+            <button
+              onClick={onClose}
+              aria-label="닫기"
+              className="rounded-md p-1 text-muted-foreground hover:bg-accent cursor-pointer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="grid max-h-[78vh] overflow-y-auto md:grid-cols-[1fr_300px] md:overflow-hidden">
+            {/* 왼쪽 본문 */}
+            <div className="space-y-5 p-6 md:max-h-[78vh] md:overflow-y-auto">
+              <input
+                aria-label="업무명"
+                className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 -mx-2 text-xl font-bold outline-none transition-colors hover:border-input focus:border-primary focus:bg-background"
+                value={f.title}
+                onChange={(e) => set("title", e.target.value)}
+                placeholder="업무명"
+              />
+
+              <div>
+                <label className={sectionLabel} htmlFor="edit-progress">
+                  추진현황 <span className="font-normal">· 보고서 금주 실적에 들어갑니다</span>
+                </label>
+                <textarea
+                  id="edit-progress"
+                  rows={5}
+                  className={cn(inputCls, "h-auto py-2 leading-relaxed")}
+                  value={f.progress}
+                  onChange={(e) => set("progress", e.target.value)}
+                  placeholder="이번 주 진행한 내용을 적어주세요"
+                />
+              </div>
+
+              <div>
+                <label className={sectionLabel} htmlFor="edit-issue">
+                  이슈 <span className="font-normal">· 없으면 비워두세요</span>
+                </label>
+                <textarea
+                  id="edit-issue"
+                  rows={2}
+                  className={cn(inputCls, "h-auto py-2 leading-relaxed")}
+                  value={f.issue}
+                  onChange={(e) => set("issue", e.target.value)}
+                />
+              </div>
+
+              <div>
+                <p className={sectionLabel}>주차별 기록</p>
+                {history === null ? (
+                  <p className="text-xs text-muted-foreground">불러오는 중...</p>
+                ) : history.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">아직 기록이 없습니다.</p>
+                ) : (
+                  <ol className="relative space-y-3 border-s border-border ps-4">
+                    {history.map((h, i) => {
+                      const older = history[i + 1];
+                      return (
+                        <li key={h.week_start} className="relative">
+                          <span
+                            className={cn(
+                              "absolute -start-[21px] top-1 h-2.5 w-2.5 rounded-full ring-2 ring-card",
+                              TRAIL_DOT[h.status] ?? "bg-muted",
+                            )}
+                          />
+                          <p className="text-xs font-semibold">
+                            {weekOrdinalLabel(h.week_start)}
+                            <span className="ms-1.5 font-normal text-muted-foreground">
+                              {weekLabel(h.week_start)}
+                            </span>
+                          </p>
+                          <p className="mt-0.5 text-xs">
+                            {h.deleted ? (
+                              <span className="text-destructive">삭제됨</span>
+                            ) : older && older.status !== h.status ? (
+                              <>
+                                상태 <b>{older.status}</b> → <b>{h.status}</b>
+                              </>
+                            ) : (
+                              <>
+                                상태 <b>{h.status}</b>
+                              </>
+                            )}
+                          </p>
+                          {h.progress && (
+                            <p className="mt-1 rounded-md bg-muted/60 px-2 py-1 text-xs text-foreground/90">
+                              {h.progress}
+                            </p>
+                          )}
+                          {h.issue && (
+                            <p className="mt-1 text-[11px] text-destructive">⚠ {h.issue}</p>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+              </div>
+            </div>
+
+            {/* 오른쪽 세부 정보 */}
+            <aside className="space-y-4 border-t border-border bg-muted/30 p-5 md:max-h-[78vh] md:overflow-y-auto md:border-s md:border-t-0">
+              <select
+                aria-label="상태"
+                className={cn(
+                  "h-9 w-full cursor-pointer rounded-lg border px-3 text-sm font-semibold outline-none",
+                  statusBadgeStyle[f.status],
+                )}
+                value={f.status}
+                onChange={(e) => set("status", e.target.value as Status)}
+              >
+                {STATUSES.map((x) => (
+                  <option key={x}>{x}</option>
+                ))}
+              </select>
+
+              <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+                <p className="text-xs font-semibold">세부 정보</p>
+                <div className={detailRow}>
+                  <label className="text-xs text-muted-foreground" htmlFor="edit-owner">
+                    담당자
+                  </label>
+                  <div>
+                    <input
+                      id="edit-owner"
+                      list="edit-owner-list"
+                      className={cn(inputCls, "h-8 text-xs")}
+                      value={f.owner}
+                      onChange={(e) => set("owner", e.target.value)}
+                    />
+                    <datalist id="edit-owner-list">
+                      {memberNames.map((n) => (
+                        <option key={n} value={n} />
+                      ))}
+                    </datalist>
+                  </div>
+                </div>
+                {unknownOwner && (
+                  <p className="text-[11px] text-warning-foreground dark:text-warning">
+                    회원 명단에 없는 담당자입니다 (제출 현황 미반영).
+                  </p>
+                )}
+                <div className={detailRow}>
+                  <label className="text-xs text-muted-foreground" htmlFor="edit-due">
+                    기한
+                  </label>
+                  <input
+                    id="edit-due"
+                    type="date"
+                    className={cn(inputCls, "h-8 text-xs")}
+                    value={/^\d{4}-\d{2}-\d{2}$/.test(f.due) ? f.due : ""}
+                    onChange={(e) => set("due", e.target.value)}
+                  />
+                </div>
+                {isOverdue(f) && (
+                  <p className="text-[11px] font-medium text-destructive">
+                    기한이 지났습니다. 상태나 기한을 확인해주세요.
+                  </p>
+                )}
+                <div className={detailRow}>
+                  <label className="text-xs text-muted-foreground" htmlFor="edit-field">
+                    분야
+                  </label>
+                  <div>
+                    <input
+                      id="edit-field"
+                      list="edit-field-list"
+                      className={cn(inputCls, "h-8 text-xs")}
+                      value={f.field}
+                      onChange={(e) => set("field", e.target.value)}
+                    />
+                    <datalist id="edit-field-list">
+                      {fields.map((n) => (
+                        <option key={n} value={n} />
+                      ))}
+                    </datalist>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1 text-[11px] text-muted-foreground">
+                <p>업무 코드 · {task.code}</p>
+                {task.updated_at && <p>최근 수정 · {formatDateTime(task.updated_at)}</p>}
+                <p>Ctrl+Enter 저장 · Esc 닫기</p>
+              </div>
+            </aside>
+          </div>
+
+          {/* 하단 동작 */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-6 py-3">
+            {confirmDelete ? (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-medium text-destructive">이 업무를 삭제할까요?</span>
+                <button
+                  onClick={() => void onDelete()}
+                  className="rounded-md bg-destructive px-2.5 py-1 font-semibold text-white cursor-pointer"
+                >
+                  삭제
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(false)}
+                  className="rounded-md px-2.5 py-1 text-muted-foreground hover:bg-accent cursor-pointer"
+                >
+                  취소
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-destructive cursor-pointer"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                업무 삭제
+              </button>
+            )}
+            <div className="flex items-center gap-2">
+              <button className={btnOutline} onClick={onClose}>
+                취소
+              </button>
+              <button
+                className={cn(btnPrimary, (!dirty || saving || !f.title.trim()) && "opacity-50")}
+                disabled={!dirty || saving || !f.title.trim()}
+                onClick={() => void save()}
+              >
+                <Check className="h-4 w-4" />
+                <span>{saving ? "저장 중..." : "저장"}</span>
+              </button>
+            </div>
+          </div>
+        </ZenithCard>
+      </div>
+    </div>
+  );
+}
+
 function KanbanView({
   tasks,
   setTasks,
+  users,
   notify,
   onOpenNewTask,
   onSyncTask,
+  onSaveTask,
 }: {
   tasks: Task[];
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
+  users: AppUser[];
   notify: (m: string) => void;
   onOpenNewTask: () => void;
   onSyncTask: (t: Task) => Promise<void>;
+  onSaveTask: (t: Task) => Promise<boolean>;
 }) {
   const thisWeek = weekStartOf();
+  const [editing, setEditing] = useState<Task | null>(null);
   const [over, setOver] = useState<Status | null>(null);
   const [selectedField, setSelectedField] = useState<string>("전체");
   const [searchQuery, setSearchQuery] = useState("");
@@ -3430,7 +3795,7 @@ function KanbanView({
           <h1 className="text-2xl font-bold tracking-tight">2. 진행상태 (칸반 보드)</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {isLive
-              ? "이번 주 보드입니다. 카드를 끌어서 상태를 변경하세요."
+              ? "이번 주 보드입니다. 카드를 끌어서 상태를 바꾸고, 카드를 눌러 추진현황·이슈를 수정하세요."
               : mode === "week"
                 ? `${weekLabel(week)} 주 말 기준 상태입니다 (읽기 전용).`
                 : `${mYear}년 ${Number(mMonth)}월 통합 보드 — 카드 아래 막대가 주차별 상태 흐름입니다 (읽기 전용).`}
@@ -3631,6 +3996,7 @@ function KanbanView({
                       editable={isLive}
                       trailWeeks={mode === "month" ? trailWeeks : undefined}
                       onDelete={() => void deleteTask(card)}
+                      onOpen={() => setEditing(tasks.find((t) => t.id === card.id) ?? null)}
                     />
                   ))}
                 </div>
@@ -3638,6 +4004,22 @@ function KanbanView({
             );
           })}
         </div>
+      )}
+
+      {editing && (
+        <TaskEditModal
+          task={editing}
+          fields={fieldsOf(tasks, FIELDS)}
+          memberNames={users.filter((u) => u.is_active).map((u) => u.name)}
+          onClose={() => setEditing(null)}
+          onSave={async (next) => {
+            if (await onSaveTask(next)) setEditing(null);
+          }}
+          onDelete={async () => {
+            await deleteTask(editing);
+            setEditing(null);
+          }}
+        />
       )}
     </div>
   );
@@ -5994,7 +6376,7 @@ function ThemeCustomizerDrawer({
           <div>
             <h2 className="text-base font-bold">Customize</h2>
             <p className="text-xs text-muted-foreground">
-              Zenith 대시보드 스타일을 맞춤 설정하세요.
+              업무보고 화면 스타일을 맞춤 설정하세요.
             </p>
           </div>
           <button
