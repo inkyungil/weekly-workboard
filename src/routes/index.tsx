@@ -59,8 +59,8 @@ function parsePaste(text: string): Task[] {
     .filter((c) => c.length >= 2 && c[1] !== "업무명")
     .map((c) => ({
       id: uid(),
-      field: FIELDS.includes(c[0] as never) ? c[0] : "복리후생/총무",
-      title: c[1],
+      field: FIELDS.includes(c[0] as never) ? (c[0] as string) : "복리후생/총무",
+      title: c[1] ?? "",
       owner: c[2] ?? "",
       due: c[3] ?? "",
       status: (STATUSES.includes(c[4] as never) ? c[4] : "대기") as Status,
