@@ -27,6 +27,8 @@ vi.mock("@/lib/supabase", async (importOriginal) => {
       "eq",
       "lt",
       "lte",
+      "gte",
+      "in",
       "limit",
       "update",
       "upsert",
@@ -118,19 +120,19 @@ describe("App (Supabase Auth + Admin Manual Registration + 업무보고 Jexcel W
       expect(screen.getByRole("heading", { name: "대시보드 (Dashboard)" })).toBeInTheDocument();
     });
 
-    // Navigate to 1. 자료 올리기 (Top DropZones + Bottom Jexcel Sheets)
+    // 1. 자료 올리기: 빈 시트(직접 입력)를 만들어 올린 파일 목록에 추가 → 샘플 입력 → 반영
     fireEvent.click(screen.getAllByText("1. 자료 올리기")[0]!);
     expect(screen.getByText("이번 주 업무일지 (팀원별 파일 여러 개 가능)")).toBeInTheDocument();
-    expect(
-      screen.getByText("이번 주 업무일지 엑셀표 (직접 입력 / 엑셀 붙여넣기)"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("지난주 보고서 엑셀표 (직접 입력 / 엑셀 붙여넣기)"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/아직 올린 파일이 없습니다/)).toBeInTheDocument();
 
-    // Fill sample rows in Jexcel sheet and reflect
+    fireEvent.click(screen.getByRole("button", { name: "빈 시트 만들기 (직접 입력)" }));
+    expect(await screen.findByText(/내용 보기·수정/)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /반영 대상/ })).toBeChecked();
+
     fireEvent.click(screen.getAllByText("샘플 채우기")[0]!);
+    expect(screen.getByText("저장하지 않은 수정 있음")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "반영하기 (2건)" }));
+    expect(await screen.findByText(/반영됨/)).toBeInTheDocument();
 
     // 계정관리 · 직급 관리에서 직급 추가
     fireEvent.click(screen.getAllByText("직급 관리")[0]!);

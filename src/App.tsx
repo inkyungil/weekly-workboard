@@ -1365,6 +1365,7 @@ function Workboard() {
               <UploadView
                 tasks={tasks}
                 users={users}
+                currentUser={currentUser}
                 onApply={handleAddTasks}
                 onNavigate={setActiveView}
                 notify={notify}
@@ -2274,31 +2275,43 @@ function ZenithDashboardOverview({
  * 2. UPLOAD VIEW (Excel/CSV Drag & Drop + Text Paste)
  * ============================================================================ */
 // 파일의 시트마다 머리글로 열을 찾아 읽음 — 「지난주」 이름의 시트는 지난주 자료로 분류
-async function readFiles(files: File[]) {
+async function readFile(file: File) {
   const XLSX = await import("xlsx");
   const cur: Draft[] = [];
   const prev: Draft[] = [];
   let headerSheets = 0;
   let sheets = 0;
-  for (const file of files) {
-    const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false });
-    for (const name of wb.SheetNames) {
-      // 양식의 「작성 안내」 시트(예시 행 포함)는 읽지 않음
-      if (name.includes("안내")) continue;
-      const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name]!, {
-        header: 1,
-        raw: false,
-        defval: "",
-      });
-      const parsed = rowsToDrafts(rows.map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " "))));
-      if (parsed.drafts.length === 0) continue;
-      sheets++;
-      if (parsed.headerDetected) headerSheets++;
-      (name.includes("지난주") ? prev : cur).push(...parsed.drafts);
-    }
+  const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false });
+  for (const name of wb.SheetNames) {
+    // 양식의 「작성 안내」 시트(예시 행 포함)는 읽지 않음
+    if (name.includes("안내")) continue;
+    const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name]!, {
+      header: 1,
+      raw: false,
+      defval: "",
+    });
+    const parsed = rowsToDrafts(rows.map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " "))));
+    if (parsed.drafts.length === 0) continue;
+    sheets++;
+    if (parsed.headerDetected) headerSheets++;
+    (name.includes("지난주") ? prev : cur).push(...parsed.drafts);
   }
   return { cur, prev, sheets, headerSheets };
 }
+
+// 올린 파일 1개 (upload_files 테이블)
+type UploadFile = {
+  id: string;
+  file_name: string;
+  kind: "current" | "prev";
+  week_start: string;
+  rows: Draft[];
+  uploaded_by: string | null;
+  uploaded_by_name: string;
+  applied_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
 type SheetRow = [string, string, string, string, string, string, string];
 
 const JEXCEL_COLUMNS = [
@@ -2630,7 +2643,22 @@ function JexcelSheet({
                         "bg-emerald-500/15 font-bold text-emerald-700 dark:text-emerald-300",
                     )}
                   >
-                    {rIdx + 1}
+                    {/* 행 번호 — 마우스를 올리면 행 삭제 버튼 */}
+                    <span className="group-hover:hidden">{rIdx + 1}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRows((prev) => {
+                          const next = prev.filter((_, i) => i !== rIdx);
+                          return next.length ? next : createEmptySheetRows(1);
+                        })
+                      }
+                      aria-label={`${rIdx + 1}행 삭제`}
+                      title="행 삭제"
+                      className="hidden w-full text-destructive group-hover:block cursor-pointer"
+                    >
+                      ×
+                    </button>
                   </td>
 
                   {/* 7 Editable Jexcel Cells */}
@@ -2720,18 +2748,26 @@ const UPLOAD_FIELD_LABELS: Record<string, string> = {
 function UploadView({
   tasks,
   users,
+  currentUser,
   onApply,
   onNavigate,
   notify,
 }: {
   tasks: Task[];
   users: AppUser[];
+  currentUser: AppUser;
   onApply: (t: Task[]) => Promise<boolean>;
   onNavigate: (v: ViewId) => void;
   notify: (m: string) => void;
 }) {
-  const [curSheetRows, setCurSheetRows] = useState<SheetRow[]>(() => createEmptySheetRows(8));
-  const [prevSheetRows, setPrevSheetRows] = useState<SheetRow[]>(() => createEmptySheetRows(8));
+  const thisWeek = weekStartOf();
+  const [files, setFiles] = useState<UploadFile[] | null>(null);
+  const [included, setIncluded] = useState<Set<string>>(new Set());
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editorRows, setEditorRows] = useState<SheetRow[]>(() => createEmptySheetRows(8));
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [myAuthId, setMyAuthId] = useState<string | null>(null);
   const [markOverdue, setMarkOverdue] = useState(true);
   const [overwriteConflicts, setOverwriteConflicts] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -2754,28 +2790,141 @@ function UploadView({
     };
   }, []);
 
-  const appendRows = (setRows: React.Dispatch<React.SetStateAction<SheetRow[]>>, drafts: Draft[]) =>
-    setRows((existing) => tasksToSheetRows([...sheetRowsToDrafts(existing), ...drafts], 8));
+  // 올린 파일 목록 (최근 4주) — 이번 주 미반영 파일은 처음부터 반영 대상으로 체크
+  useEffect(() => {
+    let alive = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (alive) setMyAuthId(data.session?.user.id ?? null);
+    });
+    supabase
+      .from("upload_files")
+      .select("*")
+      .gte("week_start", addWeeks(thisWeek, -3))
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (!alive) return;
+        const list = error || !Array.isArray(data) ? [] : (data as UploadFile[]);
+        setFiles(list);
+        setIncluded(
+          new Set(
+            list
+              .filter((f) => f.kind === "current" && f.week_start === thisWeek && !f.applied_at)
+              .map((f) => f.id),
+          ),
+        );
+      });
+    return () => {
+      alive = false;
+    };
+  }, [thisWeek]);
 
-  // 파일은 바로 반영하지 않고 엑셀표에 채운 뒤, 분석 결과를 확인하고 반영
-  const run = async (files: File[], forcePrev: boolean) => {
-    try {
-      const { cur, prev, sheets, headerSheets } = await readFiles(files);
-      const toPrev = forcePrev ? [...cur, ...prev] : prev;
-      const toCur = forcePrev ? [] : cur;
-      if (toCur.length) appendRows(setCurSheetRows, toCur);
-      if (toPrev.length) appendRows(setPrevSheetRows, toPrev);
-      if (!toCur.length && !toPrev.length) return notify("파일에서 업무 행을 찾지 못했습니다.");
-      notify(
-        `시트 ${sheets}개에서 ${toCur.length + toPrev.length}건을 읽었습니다` +
-          (headerSheets < sheets
-            ? ` (머리글 없는 시트 ${sheets - headerSheets}개는 기본 열 순서로 읽음)`
-            : "") +
-          ". 아래 분석 결과를 확인 후 반영하세요.",
-      );
-    } catch {
-      notify("파일을 읽지 못했습니다.");
+  const canModify = (f: UploadFile) => currentUser.role === "관리자" || f.uploaded_by === myAuthId;
+
+  const insertFile = async (fileName: string, kind: UploadFile["kind"], rows: Draft[]) => {
+    const { data, error } = await supabase
+      .from("upload_files")
+      .insert({
+        file_name: fileName,
+        kind,
+        week_start: thisWeek,
+        rows,
+        uploaded_by_name: currentUser.name,
+      })
+      .select("*")
+      .single();
+    if (error || !data) {
+      notify(`파일 저장 실패: ${error?.message ?? "알 수 없는 오류"}`);
+      return null;
     }
+    const saved = data as UploadFile;
+    setFiles((prev) => [saved, ...(prev ?? [])]);
+    if (kind === "current") setIncluded((prev) => new Set(prev).add(saved.id));
+    return saved;
+  };
+
+  // 파일은 바로 업무로 반영하지 않고 「올린 파일」 목록에 저장 → 분석 확인 후 반영
+  const run = async (picked: File[], forcePrev: boolean) => {
+    let total = 0;
+    for (const file of picked) {
+      try {
+        const { cur, prev, sheets, headerSheets } = await readFile(file);
+        const toPrev = forcePrev ? [...cur, ...prev] : prev;
+        const toCur = forcePrev ? [] : cur;
+        if (!toCur.length && !toPrev.length) {
+          notify(`'${file.name}'에서 업무 행을 찾지 못했습니다.`);
+          continue;
+        }
+        if (toCur.length) await insertFile(file.name, "current", toCur);
+        if (toPrev.length)
+          await insertFile(toCur.length ? `${file.name} (지난주 시트)` : file.name, "prev", toPrev);
+        total += toCur.length + toPrev.length;
+        if (headerSheets < sheets) {
+          notify(
+            `'${file.name}': 머리글 없는 시트 ${sheets - headerSheets}개는 기본 열 순서로 읽었습니다.`,
+          );
+        }
+      } catch {
+        notify(`'${file.name}' 파일을 읽지 못했습니다.`);
+      }
+    }
+    if (total)
+      notify(`${total}건을 읽어 올린 파일 목록에 저장했습니다. 분석 결과를 확인 후 반영하세요.`);
+  };
+
+  const createBlankSheet = async () => {
+    const now = new Date();
+    const label = `직접 입력 ${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const saved = await insertFile(label, "current", []);
+    if (saved) openEditor(saved);
+  };
+
+  const openEditor = (f: UploadFile) => {
+    if (editorDirty && editingId !== f.id) {
+      notify("저장하지 않은 수정 내용이 있습니다. 먼저 저장하거나 닫아주세요.");
+      return;
+    }
+    setEditingId(f.id);
+    setEditorRows(tasksToSheetRows(f.rows, 8));
+    setEditorDirty(false);
+  };
+
+  const saveEditor = async () => {
+    if (!editingId) return;
+    const rows = sheetRowsToDrafts(editorRows);
+    const ok = await runDb(
+      supabase.from("upload_files").update({ rows }).eq("id", editingId),
+      notify,
+      "파일 내용 저장 실패",
+    );
+    if (!ok) return;
+    const now = new Date().toISOString();
+    setFiles((prev) =>
+      (prev ?? []).map((f) => (f.id === editingId ? { ...f, rows, updated_at: now } : f)),
+    );
+    setEditorDirty(false);
+    notify(`파일 내용을 저장했습니다 (${rows.length}건).`);
+  };
+
+  const deleteFile = async (f: UploadFile) => {
+    const ok = await runDb(
+      supabase.from("upload_files").delete().eq("id", f.id),
+      notify,
+      "파일 삭제 실패",
+    );
+    if (!ok) return;
+    setFiles((prev) => (prev ?? []).filter((x) => x.id !== f.id));
+    setIncluded((prev) => {
+      const next = new Set(prev);
+      next.delete(f.id);
+      return next;
+    });
+    if (editingId === f.id) setEditingId(null);
+    setConfirmDeleteId(null);
+    notify(
+      f.applied_at
+        ? `'${f.file_name}' 파일을 목록에서 삭제했습니다. 이미 반영된 업무는 그대로 남습니다.`
+        : `'${f.file_name}' 파일을 삭제했습니다.`,
+    );
   };
 
   // 업무일지 양식: 「업무일지」 시트는 머리글만, 「작성 안내」 시트에 규칙·예시·선택값
@@ -2844,8 +2993,24 @@ function UploadView({
   };
 
   const today = todayIso();
-  const curDrafts = useMemo(() => sheetRowsToDrafts(curSheetRows), [curSheetRows]);
-  const prevDrafts = useMemo(() => sheetRowsToDrafts(prevSheetRows), [prevSheetRows]);
+  // 편집 중인 파일은 저장 전 내용으로 분석에 반영
+  const rowsOf = (f: UploadFile) =>
+    f.id === editingId && editorDirty ? sheetRowsToDrafts(editorRows) : f.rows;
+  const includedFiles = useMemo(
+    () => (files ?? []).filter((f) => f.kind === "current" && included.has(f.id)),
+    [files, included],
+  );
+  const curDrafts = useMemo(
+    () => includedFiles.flatMap(rowsOf),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [includedFiles, editingId, editorDirty, editorRows],
+  );
+  const prevDrafts = useMemo(
+    () =>
+      (files ?? []).filter((f) => f.kind === "prev" && f.week_start === thisWeek).flatMap(rowsOf),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [files, thisWeek, editingId, editorDirty, editorRows],
+  );
   const memberNames = useMemo(() => users.filter((u) => u.is_active).map((u) => u.name), [users]);
 
   // 이번 주(월요일 0시) 이후 시스템에서 고친 업무는 파일 값으로 덮어쓰지 않음
@@ -2877,7 +3042,7 @@ function UploadView({
         markOverdue: false,
       });
       return {
-        label: "지난주 보고서 엑셀표",
+        label: "올린 지난주 보고서",
         tasks: analysisToTasks<TaskLike>(rows, () => ({ id: "", code: "" })),
       };
     }
@@ -2905,10 +3070,26 @@ function UploadView({
     if (!analysis.length) return;
     setApplying(true);
     try {
+      if (editorDirty) await saveEditor();
       const ok = await onApply(
         analysisToTasks<Task>(analysis, () => ({ id: uid(), code: nextCode() })),
       );
-      if (ok) setCurSheetRows(createEmptySheetRows(8));
+      if (!ok) return;
+      const ids = includedFiles.map((f) => f.id);
+      const now = new Date().toISOString();
+      const marked = await runDb(
+        supabase.from("upload_files").update({ applied_at: now }).in("id", ids),
+        notify,
+        "파일 반영 표시 실패",
+      );
+      if (marked) {
+        setFiles((prev) =>
+          (prev ?? []).map((f) =>
+            ids.includes(f.id) ? { ...f, applied_at: now, updated_at: now } : f,
+          ),
+        );
+        setIncluded(new Set());
+      }
     } finally {
       setApplying(false);
     }
@@ -2970,20 +3151,219 @@ function UploadView({
         />
       </div>
 
-      <div className="grid gap-4">
-        <JexcelSheet
-          title="이번 주 업무일지 엑셀표 (직접 입력 / 엑셀 붙여넣기)"
-          subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 (엑셀에서 복사 후 셀에 Ctrl+V)"
-          rows={curSheetRows}
-          setRows={setCurSheetRows}
-        />
-        <JexcelSheet
-          title="지난주 보고서 엑셀표 (직접 입력 / 엑셀 붙여넣기)"
-          subtitle="비교 기준 — 비워 두면 지난주 확정 보고서와 비교합니다"
-          rows={prevSheetRows}
-          setRows={setPrevSheetRows}
-        />
-      </div>
+      {/* 올린 파일 목록 */}
+      <ZenithCard className="p-6">
+        <div className="flex flex-col gap-2 pb-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold">
+              올린 파일 ({files?.length ?? 0}개 · 최근 4주)
+            </h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              체크한 이번 주 파일이 아래 분석·반영 대상입니다. 파일을 눌러 내용을 보고 고칠 수
+              있습니다.
+            </p>
+          </div>
+          <button onClick={() => void createBlankSheet()} className={btnOutline}>
+            <Plus className="h-4 w-4" />
+            <span>빈 시트 만들기 (직접 입력)</span>
+          </button>
+        </div>
+
+        {files === null ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">불러오는 중...</p>
+        ) : files.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
+            아직 올린 파일이 없습니다. 위에 파일을 끌어다 놓거나 빈 시트를 만드세요.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-xs text-muted-foreground">
+                  <th className="w-10 pb-2 text-start font-medium">반영</th>
+                  <th className="pb-2 text-start font-medium">파일</th>
+                  <th className="pb-2 text-start font-medium">구분</th>
+                  <th className="pb-2 text-start font-medium">업무</th>
+                  <th className="pb-2 text-start font-medium">올린 사람</th>
+                  <th className="pb-2 text-start font-medium">상태</th>
+                  <th className="pb-2 text-end font-medium">관리</th>
+                </tr>
+              </thead>
+              <tbody>
+                {files.map((f) => {
+                  const selectable = f.kind === "current" && f.week_start === thisWeek;
+                  const editedAfterApply =
+                    !!f.applied_at && new Date(f.updated_at) > new Date(f.applied_at);
+                  return (
+                    <tr
+                      key={f.id}
+                      className={cn(
+                        "border-b border-border/50 last:border-0",
+                        editingId === f.id && "bg-primary/5",
+                      )}
+                    >
+                      <td className="py-2.5">
+                        <input
+                          type="checkbox"
+                          aria-label={`${f.file_name} 반영 대상`}
+                          disabled={!selectable}
+                          checked={included.has(f.id)}
+                          onChange={(e) =>
+                            setIncluded((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(f.id);
+                              else next.delete(f.id);
+                              return next;
+                            })
+                          }
+                          className="h-4 w-4 accent-primary disabled:opacity-30"
+                        />
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <button
+                          onClick={() => openEditor(f)}
+                          className="text-start font-medium hover:text-primary hover:underline cursor-pointer"
+                        >
+                          <FileSpreadsheet className="me-1 inline h-3.5 w-3.5 text-emerald-600" />
+                          {f.file_name}
+                        </button>
+                        <span className="block text-[11px] text-muted-foreground">
+                          {weekOrdinalLabel(f.week_start)} · {formatDateTime(f.created_at)}
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-3 text-xs">
+                        {f.kind === "current" ? "이번 주 업무일지" : "지난주 보고서(비교용)"}
+                      </td>
+                      <td className="py-2.5 pr-3 text-xs">{f.rows.length}건</td>
+                      <td className="py-2.5 pr-3 text-xs">{f.uploaded_by_name || "-"}</td>
+                      <td className="py-2.5 pr-3">
+                        {f.kind === "prev" ? (
+                          <span className="text-xs text-muted-foreground">비교 기준</span>
+                        ) : f.applied_at ? (
+                          <span
+                            className={cn(
+                              "rounded-md border px-2 py-0.5 text-[11px] font-semibold",
+                              editedAfterApply
+                                ? "border-warning/30 bg-warning/10 text-warning-foreground dark:text-warning"
+                                : "border-success/30 bg-success/10 text-success",
+                            )}
+                          >
+                            {editedAfterApply
+                              ? "반영 후 수정됨"
+                              : `반영됨 ${formatDateTime(f.applied_at)}`}
+                          </span>
+                        ) : (
+                          <span className="rounded-md border border-border bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                            미반영
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 text-end whitespace-nowrap">
+                        {confirmDeleteId === f.id ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs">
+                            <span className="text-destructive">
+                              {f.applied_at ? "목록에서 삭제 (반영된 업무는 유지)?" : "삭제할까요?"}
+                            </span>
+                            <button
+                              onClick={() => void deleteFile(f)}
+                              className="rounded-md bg-destructive px-2 py-0.5 font-semibold text-white cursor-pointer"
+                            >
+                              삭제
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="rounded-md px-2 py-0.5 text-muted-foreground hover:bg-accent cursor-pointer"
+                            >
+                              취소
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-0.5">
+                            <button
+                              onClick={() => openEditor(f)}
+                              aria-label={`${f.file_name} 보기·수정`}
+                              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            {canModify(f) && (
+                              <button
+                                onClick={() => setConfirmDeleteId(f.id)}
+                                aria-label={`${f.file_name} 삭제`}
+                                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ZenithCard>
+
+      {/* 선택한 파일 보기·수정 */}
+      {editingId &&
+        (() => {
+          const f = (files ?? []).find((x) => x.id === editingId);
+          if (!f) return null;
+          const editable = canModify(f);
+          return (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold">
+                  {f.file_name}
+                  {!editable && (
+                    <span className="ms-2 text-xs font-normal text-muted-foreground">
+                      (읽기 전용 — 올린 사람 또는 관리자만 수정할 수 있습니다)
+                    </span>
+                  )}
+                  {editorDirty && (
+                    <span className="ms-2 text-xs font-normal text-warning-foreground dark:text-warning">
+                      저장하지 않은 수정 있음
+                    </span>
+                  )}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setEditingId(null);
+                      setEditorDirty(false);
+                    }}
+                    className={btnOutline}
+                  >
+                    {editorDirty ? "수정 취소" : "닫기"}
+                  </button>
+                  {editable && (
+                    <button
+                      onClick={() => void saveEditor()}
+                      disabled={!editorDirty}
+                      className={cn(btnPrimary, !editorDirty && "opacity-50")}
+                    >
+                      <Check className="h-4 w-4" />
+                      <span>파일 내용 저장</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+              <JexcelSheet
+                title={`${f.file_name} — 내용 보기·수정`}
+                subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 (행을 지우려면 업무명을 비우거나 비우기 후 다시 입력)"
+                rows={editorRows}
+                setRows={(next) => {
+                  if (!editable) return;
+                  setEditorRows(next);
+                  setEditorDirty(true);
+                }}
+              />
+            </div>
+          );
+        })()}
 
       <ZenithCard className="space-y-5 p-6">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -5997,6 +6377,7 @@ const AUDIT_TABLES: Record<string, string> = {
   departments: "조직",
   positions: "직급",
   weekly_reports: "보고 확정",
+  upload_files: "올린 파일",
 };
 const AUDIT_ACTIONS: Record<AuditLog["action"], string> = {
   insert: "추가",
@@ -6047,7 +6428,9 @@ function AuditLogView({ notify }: { notify: (m: string) => void }) {
 
   const label = (l: AuditLog) => {
     const row = { ...(l.old_data ?? {}), ...(l.new_data ?? {}) };
-    return String(row["title"] ?? row["name"] ?? row["week_start"] ?? l.record_id);
+    return String(
+      row["title"] ?? row["name"] ?? row["file_name"] ?? row["week_start"] ?? l.record_id,
+    );
   };
 
   const changes = (l: AuditLog) => {
