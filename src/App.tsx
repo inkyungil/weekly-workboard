@@ -1,39 +1,270 @@
-import { useState, type DragEvent, type ReactNode } from "react";
+import {
+  useState,
+  useEffect,
+  useMemo,
+  type DragEvent,
+  type ReactNode,
+  type FormEvent,
+} from "react";
+import {
+  LayoutDashboard,
+  Upload as UploadIcon,
+  Kanban as KanbanIcon,
+  FileText,
+  Bell,
+  Settings,
+  Search,
+  Plus,
+  Sun,
+  Moon,
+  Monitor,
+  SlidersHorizontal,
+  ChevronRight,
+  ChevronLeft,
+  ChevronDown,
+  LogOut,
+  LogIn,
+  TrendingUp,
+  TrendingDown,
+  ArrowUpRight,
+  CheckCircle2,
+  Clock,
+  AlertTriangle,
+  Layers,
+  UserPlus,
+  Copy,
+  Trash2,
+  X,
+  Menu,
+  Sparkles,
+  ShieldCheck,
+  FileSpreadsheet,
+  ClipboardPaste,
+  CheckCheck,
+  PanelLeft,
+  PanelTop,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  PieChart,
+  Pie,
+  Cell,
+} from "recharts";
+import { cn } from "@/lib/utils";
 
-const FIELDS = ["복리후생/총무", "사회공헌/의전", "자산", "비상계획"] as const;
-const STATUSES = ["대기", "진행 중", "지연 / 이슈", "완료"] as const;
-type Status = (typeof STATUSES)[number];
-type Task = { id: string; field: string; title: string; owner: string; due: string; status: Status; progress: string; issue: string };
+export const FIELDS = ["복리후생/총무", "사회공헌/의전", "자산", "비상계획"] as const;
+export const STATUSES = ["대기", "진행 중", "지연 / 이슈", "완료"] as const;
+export type Status = (typeof STATUSES)[number];
 
+export type Task = {
+  id: string;
+  code: string;
+  field: string;
+  title: string;
+  owner: string;
+  due: string;
+  status: Status;
+  progress: string;
+  issue: string;
+};
+
+type ActivityItem = {
+  id: string;
+  type: "task" | "complete" | "issue" | "upload" | "report";
+  title: string;
+  description: string;
+  time: string;
+  read: boolean;
+};
+
+type ViewId = "dashboard" | "upload" | "kanban" | "report";
+type ThemeMode = "light" | "dark" | "system";
+type ColorPreset = "neutral" | "zinc" | "blue" | "violet" | "rose" | "orange";
+type DensityMode = "compact" | "comfortable" | "spacious";
+type LayoutMode = "sidebar" | "topnav";
+type ContainerMode = "fluid" | "boxed";
+
+let taskSeq = 1006;
 const uid = () => Math.random().toString(36).slice(2, 10);
+const nextCode = () => `TSK-${taskSeq++}`;
+
 const SAMPLE: Task[] = [
-  { id: uid(), field: "복리후생/총무", title: "동계 콘도 추첨 시스템 오픈", owner: "김철수", due: "2026-11-04", status: "지연 / 이슈", progress: "인증 오류 조치 중", issue: "외부 연동 지연" },
-  { id: uid(), field: "복리후생/총무", title: "4분기 건강검진 안내", owner: "이영희", due: "2026-11-04", status: "완료", progress: "전사 안내 완료", issue: "" },
-  { id: uid(), field: "사회공헌/의전", title: "연말 연탄나눔 기획", owner: "박민수", due: "2026-11-10", status: "진행 중", progress: "수혜 가구 선정 중", issue: "" },
-  { id: uid(), field: "자산", title: "하반기 고정자산 실사", owner: "최동석", due: "2026-11-05", status: "완료", progress: "1차 바코드 실사 완료", issue: "" },
-  { id: uid(), field: "비상계획", title: "동절기 소방시설 점검", owner: "정대리", due: "2026-11-12", status: "대기", progress: "체크리스트 작성 완료", issue: "" },
+  {
+    id: "t-1",
+    code: "TSK-1001",
+    field: "복리후생/총무",
+    title: "동계 콘도 추첨 시스템 오픈",
+    owner: "김철수",
+    due: "2026-11-04",
+    status: "지연 / 이슈",
+    progress: "인증 오류 조치 중",
+    issue: "외부 연동 지연",
+  },
+  {
+    id: "t-2",
+    code: "TSK-1002",
+    field: "복리후생/총무",
+    title: "4분기 건강검진 안내",
+    owner: "이영희",
+    due: "2026-11-04",
+    status: "완료",
+    progress: "전사 안내 완료",
+    issue: "",
+  },
+  {
+    id: "t-3",
+    code: "TSK-1003",
+    field: "사회공헌/의전",
+    title: "연말 연탄나눔 기획",
+    owner: "박민수",
+    due: "2026-11-10",
+    status: "진행 중",
+    progress: "수혜 가구 선정 중",
+    issue: "",
+  },
+  {
+    id: "t-4",
+    code: "TSK-1004",
+    field: "자산",
+    title: "하반기 고정자산 실사",
+    owner: "최동석",
+    due: "2026-11-05",
+    status: "완료",
+    progress: "1차 바코드 실사 완료",
+    issue: "",
+  },
+  {
+    id: "t-5",
+    code: "TSK-1005",
+    field: "비상계획",
+    title: "동절기 소방시설 점검",
+    owner: "정대리",
+    due: "2026-11-12",
+    status: "대기",
+    progress: "체크리스트 작성 완료",
+    issue: "",
+  },
+];
+
+const INITIAL_ACTIVITIES: ActivityItem[] = [
+  {
+    id: "act-1",
+    type: "issue",
+    title: "지연 / 이슈 발생 알림",
+    description: "김철수 — 동계 콘도 추첨 시스템 오픈 (외부 연동 지연)",
+    time: "방금 전",
+    read: false,
+  },
+  {
+    id: "act-2",
+    type: "complete",
+    title: "업무 완료 처리",
+    description: "이영희 — 4분기 건강검진 안내 (전사 안내 완료)",
+    time: "15분 전",
+    read: false,
+  },
+  {
+    id: "act-3",
+    type: "complete",
+    title: "고정자산 실사 1차 완료",
+    description: "최동석 — 하반기 고정자산 실사 바코드 점검 완료",
+    time: "1시간 전",
+    read: false,
+  },
+  {
+    id: "act-4",
+    type: "task",
+    title: "신규 기획 업무 진행 중",
+    description: "박민수 — 연말 연탄나눔 기획 (수혜 가구 선정 중)",
+    time: "2시간 전",
+    read: true,
+  },
+  {
+    id: "act-5",
+    type: "upload",
+    title: "비상계획 점검 일정 등록",
+    description: "정대리 — 동절기 소방시설 점검 체크리스트 작성",
+    time: "4시간 전",
+    read: true,
+  },
+];
+
+const MONTHLY_TREND_DATA = [
+  { month: "6월", completed: 18, total: 22, rate: 82 },
+  { month: "7월", completed: 24, total: 28, rate: 86 },
+  { month: "8월", completed: 21, total: 25, rate: 84 },
+  { month: "9월", completed: 29, total: 33, rate: 88 },
+  { month: "10월", completed: 34, total: 38, rate: 89 },
+  { month: "11월 1주", completed: 38, total: 42, rate: 90 },
+];
+
+const COLOR_PRESETS: { key: ColorPreset; label: string }[] = [
+  { key: "neutral", label: "Neutral" },
+  { key: "zinc", label: "Zinc" },
+  { key: "blue", label: "Blue" },
+  { key: "violet", label: "Violet" },
+  { key: "rose", label: "Rose" },
+  { key: "orange", label: "Orange" },
+];
+
+const AVATAR_GRADIENTS = [
+  "from-chart-1/70 to-chart-1",
+  "from-chart-2/70 to-chart-2",
+  "from-chart-3/70 to-chart-3",
+  "from-chart-4/70 to-chart-4",
+  "from-chart-5/70 to-chart-5",
 ];
 
 const fieldColor: Record<string, string> = {
-  "복리후생/총무": "bg-primary/10 text-primary",
-  "사회공헌/의전": "bg-success/15 text-success",
-  자산: "bg-warning/20 text-foreground",
-  비상계획: "bg-destructive/10 text-destructive",
-};
-const statusColor: Record<Status, string> = {
-  대기: "bg-muted text-muted-foreground",
-  "진행 중": "bg-primary/10 text-primary",
-  "지연 / 이슈": "bg-destructive/10 text-destructive",
-  완료: "bg-success/15 text-success",
+  "복리후생/총무": "bg-chart-1/10 text-chart-1 border-chart-1/20",
+  "사회공헌/의전": "bg-chart-2/10 text-chart-2 border-chart-2/20",
+  자산: "bg-chart-3/10 text-chart-3 border-chart-3/20",
+  비상계획: "bg-chart-5/15 text-chart-5 border-chart-5/25",
 };
 
-const inputCls = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring";
-const btn = "inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-colors";
-const btnPrimary = `${btn} bg-primary text-primary-foreground hover:bg-primary/90`;
-const btnOutline = `${btn} border border-input bg-background hover:bg-accent`;
-const Card = ({ children, className = "" }: { children: ReactNode; className?: string }) => (
-  <div className={`rounded-xl border border-border bg-card p-6 shadow-sm ${className}`}>{children}</div>
-);
+const statusBadgeStyle: Record<Status, string> = {
+  완료: "bg-success/15 text-success border-success/25",
+  "진행 중": "bg-primary/10 text-primary border-primary/20",
+  대기: "bg-warning/15 text-warning-foreground dark:text-warning border-warning/30",
+  "지연 / 이슈": "bg-destructive/15 text-destructive border-destructive/25",
+};
+
+const inputCls =
+  "w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-ring/30";
+const btn =
+  "inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-all duration-200 cursor-pointer";
+const btnPrimary = `${btn} bg-primary text-primary-foreground shadow-xs hover:bg-primary/90`;
+const btnOutline = `${btn} border border-input bg-background hover:bg-accent hover:text-accent-foreground`;
+
+function ZenithCard({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      data-slot="card"
+      className={cn(
+        "rounded-xl border border-border bg-card text-card-foreground shadow-xs transition-all duration-200",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
 
 function parsePaste(text: string): Task[] {
   return text
@@ -44,10 +275,11 @@ function parsePaste(text: string): Task[] {
     .filter((c) => c.length >= 2 && c[1] !== "업무명")
     .map((c) => ({
       id: uid(),
+      code: nextCode(),
       field: FIELDS.includes(c[0] as never) ? (c[0] as string) : "복리후생/총무",
       title: c[1] ?? "",
-      owner: c[2] ?? "",
-      due: c[3] ?? "",
+      owner: c[2] ?? "미지정",
+      due: c[3] ?? "2026-11-15",
       status: (STATUSES.includes(c[4] as never) ? c[4] : "대기") as Status,
       progress: c[5] ?? "",
       issue: c[6] ?? "",
@@ -55,77 +287,1414 @@ function parsePaste(text: string): Task[] {
 }
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  // Default entry directly into Zenith Dashboard per user selection; Login screen accessible via Logout / menu
+  const [isLoggedIn, setIsLoggedIn] = useState(true);
+  const [currentUser, setCurrentUser] = useState({ name: "관리자", email: "admin@zenith.kr", role: "총무기획팀장" });
   const [tasks, setTasks] = useState<Task[]>(SAMPLE);
-  const [tab, setTab] = useState(0);
+  const [activities, setActivities] = useState<ActivityItem[]>(INITIAL_ACTIVITIES);
+  const [activeView, setActiveView] = useState<ViewId>("dashboard");
+
+  // Zenith Shell State
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [customizerOpen, setCustomizerOpen] = useState(false);
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [newTaskModalOpen, setNewTaskModalOpen] = useState(false);
+
+  // Zenith Theme Customizer State
+  const [theme, setTheme] = useState<ThemeMode>("light");
+  const [colorPreset, setColorPreset] = useState<ColorPreset>("neutral");
+  const [density, setDensity] = useState<DensityMode>("comfortable");
+  const [layout, setLayout] = useState<LayoutMode>("sidebar");
+  const [container, setContainer] = useState<ContainerMode>("fluid");
+
+  // Collapsible Sidebar Groups
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
+    overview: true,
+    workboard: true,
+    system: true,
+  });
+
+  // Toast State
   const [toast, setToast] = useState("");
   const notify = (m: string) => {
     setToast(m);
-    setTimeout(() => setToast(""), 2500);
+    setTimeout(() => setToast(""), 2800);
   };
 
-  return (
-    <div className="min-h-screen bg-muted/40 font-sans">
-      {!isLoggedIn ? (
-        <Login onLogin={() => setIsLoggedIn(true)} />
-      ) : (
-        <>
-          <header className="border-b border-border bg-card">
-            <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-              <h1 className="text-lg font-bold">업무관리 시스템</h1>
-              <div className="flex items-center gap-3 text-sm">
-                <span><b>관리자</b> 님 환영합니다</span>
-                <button className={btnOutline} onClick={() => setIsLoggedIn(false)}>로그아웃</button>
-              </div>
+  // Apply Zenith theme / preset / density to <html>
+  useEffect(() => {
+    const root = document.documentElement;
+    const isDark =
+      theme === "dark" ||
+      (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    root.classList.toggle("dark", isDark);
+    root.classList.toggle("light", !isDark);
+    root.style.colorScheme = isDark ? "dark" : "light";
+  }, [theme]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (colorPreset === "neutral") {
+      root.removeAttribute("data-color-preset");
+    } else {
+      root.setAttribute("data-color-preset", colorPreset);
+    }
+  }, [colorPreset]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove("density-compact", "density-comfortable", "density-spacious");
+    root.classList.add(`density-${density}`);
+  }, [density]);
+
+  // Command Palette shortcut (⌘K / Ctrl+K)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCmdOpen((prev) => !prev);
+      } else if (e.key === "Escape") {
+        setCmdOpen(false);
+        setNotifOpen(false);
+        setUserMenuOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const addActivity = (item: Omit<ActivityItem, "id" | "time" | "read">) => {
+    setActivities((prev) => [
+      { ...item, id: uid(), time: "방금 전", read: false },
+      ...prev.slice(0, 14),
+    ]);
+  };
+
+  const handleAddTasks = (newTasks: Task[]) => {
+    setTasks((prev) => [...newTasks, ...prev]);
+    addActivity({
+      type: "upload",
+      title: `업무 자료 ${newTasks.length}건 반영 완료`,
+      description: `${newTasks[0]?.title ?? "신규 업무"} 외 ${Math.max(0, newTasks.length - 1)}건 업로드됨`,
+    });
+    notify(`${newTasks.length}건이 반영되었습니다.`);
+  };
+
+  const delayedCount = useMemo(
+    () => tasks.filter((t) => t.status === "지연 / 이슈").length,
+    [tasks],
+  );
+  const unreadNotifCount = useMemo(
+    () => activities.filter((a) => !a.read).length,
+    [activities],
+  );
+
+  if (!isLoggedIn) {
+    return (
+      <>
+        <Login
+          onLogin={(userId) => {
+            setCurrentUser((u) => ({ ...u, name: userId === "admin" ? "관리자" : userId }));
+            setIsLoggedIn(true);
+            notify("로그인되었습니다. 환영합니다!");
+          }}
+          onQuickAccess={() => {
+            setIsLoggedIn(true);
+          }}
+        />
+        {toast && (
+          <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-lg border border-border bg-foreground px-4 py-3 text-sm font-medium text-background shadow-lg">
+            <Sparkles className="h-4 w-4 shrink-0" />
+            {toast}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  const navGroups = [
+    {
+      key: "overview",
+      label: "Overview",
+      items: [
+        {
+          id: "dashboard" as ViewId,
+          label: "대시보드 (Dashboard)",
+          shortLabel: "대시보드",
+          icon: LayoutDashboard,
+          badge: undefined,
+        },
+      ],
+    },
+    {
+      key: "workboard",
+      label: "Workboard · 업무관리",
+      items: [
+        {
+          id: "upload" as ViewId,
+          label: "1. 자료 올리기",
+          shortLabel: "1. 자료 올리기",
+          icon: UploadIcon,
+          badge: undefined,
+        },
+        {
+          id: "kanban" as ViewId,
+          label: "2. 진행상태 (칸반 보드)",
+          shortLabel: "2. 진행상태 (칸반 보드)",
+          icon: KanbanIcon,
+          badge: String(tasks.length),
+        },
+        {
+          id: "report" as ViewId,
+          label: "3. 주간업무보고서",
+          shortLabel: "3. 주간업무보고서",
+          icon: FileText,
+          badge: delayedCount > 0 ? `${delayedCount}` : undefined,
+        },
+      ],
+    },
+  ];
+
+  const SidebarContent = ({ isCollapsed }: { isCollapsed: boolean }) => (
+    <>
+      {/* Zenith Brand Header */}
+      <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary shadow-xs">
+          <Layers className="h-4 w-4 text-sidebar-primary-foreground" />
+        </div>
+        {!isCollapsed && (
+          <div className="flex flex-col overflow-hidden">
+            <span className="truncate text-sm font-bold tracking-tight text-sidebar-foreground">
+              Zenith
+            </span>
+            <span className="truncate text-[10px] font-medium uppercase tracking-widest text-sidebar-foreground/40">
+              업무관리 시스템
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Zenith Navigation */}
+      <nav
+        role="navigation"
+        aria-label="Main navigation"
+        className="flex-1 space-y-4 overflow-y-auto px-3 py-4"
+      >
+        {navGroups.map((group) => {
+          const isOpen = openGroups[group.key] ?? true;
+          return (
+            <div key={group.key}>
+              {!isCollapsed && (
+                <button
+                  onClick={() =>
+                    setOpenGroups((prev) => ({ ...prev, [group.key]: !isOpen }))
+                  }
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/35 transition-colors hover:text-sidebar-foreground/60 cursor-pointer"
+                >
+                  <span className="flex-1 text-start">{group.label}</span>
+                  <ChevronRight
+                    className={cn(
+                      "size-3 transition-transform duration-200",
+                      isOpen && "rotate-90",
+                    )}
+                  />
+                </button>
+              )}
+              {(isCollapsed || isOpen) && (
+                <div className="mt-1 space-y-0.5">
+                  {group.items.map((item) => {
+                    const Icon = item.icon;
+                    const active = activeView === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => {
+                          setActiveView(item.id);
+                          setMobileOpen(false);
+                        }}
+                        aria-current={active ? "page" : undefined}
+                        title={isCollapsed ? item.label : undefined}
+                        className={cn(
+                          "group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 cursor-pointer",
+                          active
+                            ? "bg-sidebar-accent text-sidebar-primary font-semibold"
+                            : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+                        )}
+                      >
+                        <Icon
+                          className={cn(
+                            "h-[18px] w-[18px] shrink-0 transition-colors",
+                            active
+                              ? "text-sidebar-primary"
+                              : "text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80",
+                          )}
+                        />
+                        {!isCollapsed && (
+                          <>
+                            <span className="flex-1 text-start truncate">{item.label}</span>
+                            {item.badge && (
+                              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-sidebar-primary/15 px-1.5 text-[10px] font-semibold text-sidebar-primary">
+                                {item.badge}
+                              </span>
+                            )}
+                          </>
+                        )}
+                        {isCollapsed && item.badge && (
+                          <span className="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-sidebar-primary" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <nav className="mx-auto flex max-w-7xl gap-1 px-6">
-              {["1. 자료 올리기", "2. 진행상태 (칸반 보드)", "3. 주간업무보고서"].map((t, i) => (
-                <button key={t} onClick={() => setTab(i)}
-                  className={`border-b-2 px-4 py-3 text-sm font-medium ${tab === i ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-                  {t}
+          );
+        })}
+
+        <div className="my-2 border-t border-sidebar-border" />
+
+        {/* System Section */}
+        <div>
+          {!isCollapsed && (
+            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/35">
+              System
+            </div>
+          )}
+          <div className="mt-1 space-y-0.5">
+            <button
+              onClick={() => {
+                setCustomizerOpen(true);
+                setMobileOpen(false);
+              }}
+              className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition-all duration-200 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground cursor-pointer"
+            >
+              <Settings className="h-[18px] w-[18px] shrink-0 text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80" />
+              {!isCollapsed && <span className="flex-1 text-start">테마 커스터마이저</span>}
+            </button>
+            <button
+              onClick={() => {
+                setNewTaskModalOpen(true);
+                setMobileOpen(false);
+              }}
+              className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition-all duration-200 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground cursor-pointer"
+            >
+              <Plus className="h-[18px] w-[18px] shrink-0 text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80" />
+              {!isCollapsed && <span className="flex-1 text-start">새 업무 빠른 등록</span>}
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      {/* Zenith Sidebar User Footer */}
+      <div className="border-t border-sidebar-border p-3">
+        <div className="flex items-center gap-2">
+          <div className="flex flex-1 items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-sidebar-accent/50">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sidebar-primary/80 to-sidebar-primary text-[11px] font-bold text-sidebar-primary-foreground">
+              AD
+            </div>
+            {!isCollapsed && (
+              <div className="flex flex-1 flex-col overflow-hidden">
+                <span className="truncate text-sm font-medium text-sidebar-foreground">
+                  {currentUser.name}
+                </span>
+                <span className="truncate text-[11px] text-sidebar-foreground/50">
+                  {currentUser.role}
+                </span>
+              </div>
+            )}
+          </div>
+          {!isCollapsed && (
+            <button
+              onClick={() => setIsLoggedIn(false)}
+              aria-label="로그아웃"
+              title="로그아웃 (로그인 화면)"
+              className="rounded-md p-1.5 text-sidebar-foreground/40 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground/80 cursor-pointer"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <div
+      className={cn(
+        "min-h-screen font-sans text-foreground transition-colors",
+        container === "boxed"
+          ? "mx-auto max-w-[1440px] border-x border-border bg-background shadow-sm"
+          : "bg-background",
+      )}
+    >
+      <div className="flex min-h-screen">
+        {/* Desktop Sidebar */}
+        {layout === "sidebar" && (
+          <aside
+            className={cn(
+              "fixed left-0 top-0 z-40 hidden h-screen flex-col border-r border-sidebar-border bg-sidebar transition-all duration-300 ease-in-out lg:flex",
+              collapsed ? "w-[68px]" : "w-[260px]",
+            )}
+          >
+            <SidebarContent isCollapsed={collapsed} />
+            <button
+              onClick={() => setCollapsed(!collapsed)}
+              aria-label={collapsed ? "사이드바 펼치기" : "사이드바 접기"}
+              className="absolute -right-3 top-20 flex h-6 w-6 items-center justify-center rounded-full border border-sidebar-border bg-sidebar text-sidebar-foreground/60 shadow-sm transition-all hover:bg-sidebar-accent hover:text-sidebar-foreground cursor-pointer"
+            >
+              <ChevronLeft
+                className={cn(
+                  "h-3.5 w-3.5 transition-transform duration-300",
+                  collapsed && "rotate-180",
+                )}
+              />
+            </button>
+          </aside>
+        )}
+
+        {/* Mobile Sidebar Drawer */}
+        {mobileOpen && (
+          <div
+            className="fixed inset-0 z-40 bg-black/50 backdrop-blur-xs lg:hidden"
+            onClick={() => setMobileOpen(false)}
+          />
+        )}
+        <aside
+          className={cn(
+            "fixed left-0 top-0 z-50 flex h-screen w-[260px] flex-col border-r border-sidebar-border bg-sidebar transition-transform duration-300 ease-in-out lg:hidden",
+            mobileOpen ? "translate-x-0" : "-translate-x-full",
+          )}
+        >
+          <SidebarContent isCollapsed={false} />
+          <button
+            onClick={() => setMobileOpen(false)}
+            aria-label="사이드바 닫기"
+            className="absolute right-3 top-4 flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </aside>
+
+        {/* Main Content Column */}
+        <div
+          className={cn(
+            "flex flex-1 flex-col transition-all duration-300",
+            layout === "sidebar" ? (collapsed ? "lg:ms-[68px]" : "lg:ms-[260px]") : "",
+          )}
+        >
+          {/* Zenith Sticky Header */}
+          <div className="sticky top-0 z-30">
+            <header className="flex h-16 items-center justify-between border-b border-border bg-background/80 px-4 backdrop-blur-xl sm:px-6">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setMobileOpen(true)}
+                  aria-label="메뉴 열기"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:hidden cursor-pointer"
+                >
+                  <Menu className="h-5 w-5" />
+                </button>
+
+                {layout === "topnav" && (
+                  <div className="hidden items-center gap-2.5 lg:flex">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary">
+                      <Layers className="h-4 w-4 text-primary-foreground" />
+                    </div>
+                    <span className="text-sm font-bold tracking-tight">Zenith</span>
+                    <div className="mx-1 h-6 w-px bg-border" />
+                  </div>
+                )}
+
+                {/* Command Palette Trigger */}
+                <button
+                  onClick={() => setCmdOpen(true)}
+                  className="relative hidden h-9 w-64 items-center rounded-lg border border-input bg-muted/40 ps-9 pe-4 text-start text-sm text-muted-foreground/60 transition-colors hover:bg-muted/70 sm:flex md:w-72 cursor-pointer"
+                >
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/60" />
+                  <span>업무·메뉴 빠른 검색...</span>
+                  <kbd className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">
+                    ⌘K
+                  </kbd>
+                </button>
+              </div>
+
+              {/* Header Right Actions */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setNewTaskModalOpen(true)}
+                  className="hidden h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-xs transition-colors hover:bg-primary/90 sm:inline-flex cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>새 업무 등록</span>
+                </button>
+
+                <div className="mx-1 hidden h-6 w-px bg-border sm:block" />
+
+                {/* Theme Toggle */}
+                <button
+                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                  aria-label="테마 전환"
+                  title="라이트/다크 모드 전환"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
+                >
+                  {theme === "dark" ? (
+                    <Sun className="h-4 w-4" />
+                  ) : (
+                    <Moon className="h-4 w-4" />
+                  )}
+                </button>
+
+                {/* Theme Customizer Button */}
+                <button
+                  onClick={() => setCustomizerOpen(true)}
+                  aria-label="테마 커스터마이즈"
+                  title="Zenith 테마 커스터마이저"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                </button>
+
+                {/* Notifications Dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => {
+                      setNotifOpen(!notifOpen);
+                      setUserMenuOpen(false);
+                    }}
+                    aria-label="알림"
+                    className="relative flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
+                  >
+                    <Bell className="h-4 w-4" />
+                    {unreadNotifCount > 0 && (
+                      <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive" />
+                    )}
+                  </button>
+
+                  {notifOpen && (
+                    <div className="absolute right-0 mt-2 w-80 rounded-xl border border-border bg-popover p-0 text-popover-foreground shadow-xl z-50">
+                      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold">업무 알림</p>
+                          {unreadNotifCount > 0 && (
+                            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/15 px-1.5 text-[10px] font-semibold text-primary">
+                              {unreadNotifCount}
+                            </span>
+                          )}
+                        </div>
+                        {unreadNotifCount > 0 && (
+                          <button
+                            onClick={() =>
+                              setActivities((prev) => prev.map((a) => ({ ...a, read: true })))
+                            }
+                            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+                          >
+                            <CheckCheck className="h-3 w-3" />
+                            모두 읽음
+                          </button>
+                        )}
+                      </div>
+                      <div className="max-h-72 overflow-y-auto divide-y divide-border/50">
+                        {activities.slice(0, 5).map((act) => (
+                          <button
+                            key={act.id}
+                            onClick={() => {
+                              setActivities((prev) =>
+                                prev.map((a) => (a.id === act.id ? { ...a, read: true } : a)),
+                              );
+                              setNotifOpen(false);
+                              setActiveView("kanban");
+                            }}
+                            className={cn(
+                              "flex w-full items-start gap-3 px-4 py-3 text-start transition-colors hover:bg-accent/50 cursor-pointer",
+                              !act.read && "bg-primary/5",
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
+                                act.type === "issue"
+                                  ? "bg-destructive/15 text-destructive"
+                                  : act.type === "complete"
+                                    ? "bg-success/15 text-success"
+                                    : "bg-chart-1/15 text-chart-1",
+                              )}
+                            >
+                              {act.type === "issue" ? (
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                              ) : act.type === "complete" ? (
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                              ) : (
+                                <Clock className="h-3.5 w-3.5" />
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p
+                                className={cn(
+                                  "truncate text-xs",
+                                  act.read
+                                    ? "font-medium text-muted-foreground"
+                                    : "font-semibold text-foreground",
+                                )}
+                              >
+                                {act.title}
+                              </p>
+                              <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                                {act.description}
+                              </p>
+                              <p className="mt-1 text-[10px] text-muted-foreground/60">
+                                {act.time}
+                              </p>
+                            </div>
+                            {!act.read && (
+                              <span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="border-t border-border">
+                        <button
+                          onClick={() => {
+                            setNotifOpen(false);
+                            setActiveView("report");
+                          }}
+                          className="flex w-full items-center justify-center py-2.5 text-xs font-medium text-primary hover:text-primary/80 cursor-pointer"
+                        >
+                          주간업무보고서에서 전체 이슈 보기
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* User Profile Pill & Logout */}
+                <div className="relative flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setUserMenuOpen(!userMenuOpen);
+                      setNotifOpen(false);
+                    }}
+                    aria-label="사용자 메뉴"
+                    className="ms-1 flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 ps-1 pe-2.5 text-xs font-medium transition-colors hover:bg-accent cursor-pointer"
+                  >
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                      AD
+                    </span>
+                    <span className="hidden sm:inline">
+                      <b>{currentUser.name}</b> 님
+                    </span>
+                    <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                  </button>
+
+                  <button
+                    onClick={() => setIsLoggedIn(false)}
+                    className="hidden h-8 items-center rounded-lg border border-input bg-background px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:inline-flex cursor-pointer"
+                  >
+                    로그아웃
+                  </button>
+
+                  {userMenuOpen && (
+                    <div className="absolute right-0 top-10 w-52 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-xl z-50">
+                      <div className="px-2.5 py-2">
+                        <p className="text-sm font-semibold">{currentUser.name} 님 환영합니다</p>
+                        <p className="text-xs text-muted-foreground">{currentUser.email}</p>
+                      </div>
+                      <div className="my-1 border-t border-border" />
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          setCustomizerOpen(true);
+                        }}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium hover:bg-accent cursor-pointer"
+                      >
+                        <Settings className="h-3.5 w-3.5 text-muted-foreground" />
+                        테마 및 레이아웃 설정
+                      </button>
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          setIsLoggedIn(false);
+                        }}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium text-destructive hover:bg-destructive/10 cursor-pointer"
+                      >
+                        <LogOut className="h-3.5 w-3.5" />
+                        로그아웃 (로그인 화면)
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </header>
+
+            {/* Quick Navigation Sub-bar (Always accessible for 1-click view switching) */}
+            <nav
+              aria-label="Quick view tabs"
+              className="flex items-center justify-between border-b border-border bg-background/70 px-4 backdrop-blur-xl sm:px-6 overflow-x-auto"
+            >
+              <div className="flex items-center gap-1">
+                {[
+                  { id: "dashboard" as ViewId, label: "대시보드 (Overview)", icon: LayoutDashboard },
+                  { id: "upload" as ViewId, label: "1. 자료 올리기", icon: UploadIcon },
+                  { id: "kanban" as ViewId, label: "2. 진행상태 (칸반 보드)", icon: KanbanIcon },
+                  { id: "report" as ViewId, label: "3. 주간업무보고서", icon: FileText },
+                ].map((tabItem) => {
+                  const Icon = tabItem.icon;
+                  const active = activeView === tabItem.id;
+                  return (
+                    <button
+                      key={tabItem.id}
+                      onClick={() => setActiveView(tabItem.id)}
+                      className={cn(
+                        "flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-xs font-medium whitespace-nowrap transition-colors cursor-pointer",
+                        active
+                          ? "border-primary text-primary font-semibold"
+                          : "border-transparent text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      <span>{tabItem.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="hidden items-center gap-2 text-xs text-muted-foreground lg:flex">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-medium">
+                  <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                  전체 {tasks.length}건 · 완료 {tasks.filter((t) => t.status === "완료").length}건
+                </span>
+              </div>
+            </nav>
+          </div>
+
+          {/* Main Workspace Area */}
+          <main id="main-content" className="flex-1 p-4 sm:p-6">
+            {activeView === "dashboard" && (
+              <ZenithDashboardOverview
+                tasks={tasks}
+                activities={activities}
+                onNavigate={setActiveView}
+                onOpenNewTask={() => setNewTaskModalOpen(true)}
+                onStatusChange={(id, status) => {
+                  setTasks((prev) =>
+                    prev.map((t) => (t.id === id ? { ...t, status } : t)),
+                  );
+                  notify(`업무 상태가 '${status}'(으)로 변경되었습니다.`);
+                }}
+              />
+            )}
+            {activeView === "upload" && (
+              <UploadView
+                tasks={tasks}
+                onAdd={handleAddTasks}
+                onNavigate={setActiveView}
+              />
+            )}
+            {activeView === "kanban" && (
+              <KanbanView
+                tasks={tasks}
+                setTasks={setTasks}
+                notify={notify}
+                onOpenNewTask={() => setNewTaskModalOpen(true)}
+              />
+            )}
+            {activeView === "report" && <ReportView tasks={tasks} notify={notify} />}
+          </main>
+        </div>
+      </div>
+
+      {/* Global New Task Modal */}
+      {newTaskModalOpen && (
+        <NewTaskModal
+          onClose={() => setNewTaskModalOpen(false)}
+          onCreate={(newTask) => {
+            setTasks((prev) => [newTask, ...prev]);
+            addActivity({
+              type: newTask.status === "지연 / 이슈" ? "issue" : "task",
+              title: "새 업무 등록됨",
+              description: `${newTask.owner || "담당자"} — ${newTask.title} (${newTask.field})`,
+            });
+            setNewTaskModalOpen(false);
+            notify("새 업무가 등록되었습니다.");
+          }}
+          notify={notify}
+        />
+      )}
+
+      {/* Zenith Command Palette Modal (⌘K) */}
+      {cmdOpen && (
+        <CommandPaletteModal
+          tasks={tasks}
+          onClose={() => setCmdOpen(false)}
+          onSelectView={(v) => {
+            setActiveView(v);
+            setCmdOpen(false);
+          }}
+          onNewTask={() => {
+            setCmdOpen(false);
+            setNewTaskModalOpen(true);
+          }}
+          onToggleTheme={() => {
+            setTheme(theme === "dark" ? "light" : "dark");
+            setCmdOpen(false);
+          }}
+          onLogout={() => {
+            setCmdOpen(false);
+            setIsLoggedIn(false);
+          }}
+        />
+      )}
+
+      {/* Zenith Live Theme Customizer Sheet */}
+      {customizerOpen && (
+        <ThemeCustomizerDrawer
+          theme={theme}
+          setTheme={setTheme}
+          colorPreset={colorPreset}
+          setColorPreset={setColorPreset}
+          density={density}
+          setDensity={setDensity}
+          layout={layout}
+          setLayout={setLayout}
+          container={container}
+          setContainer={setContainer}
+          onReset={() => {
+            setTheme("light");
+            setColorPreset("neutral");
+            setDensity("comfortable");
+            setLayout("sidebar");
+            setContainer("fluid");
+            notify("기본 테마 설정으로 초기화되었습니다.");
+          }}
+          onClose={() => setCustomizerOpen(false)}
+        />
+      )}
+
+      {/* Toast Notification */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-lg border border-border bg-foreground px-4 py-3 text-sm font-medium text-background shadow-lg">
+          <Sparkles className="h-4 w-4 shrink-0" />
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 1. ZENITH DASHBOARD OVERVIEW PAGE (Copied from zenith-shadcn.dashboardpack.com/dashboard)
+ * ============================================================================ */
+function ZenithDashboardOverview({
+  tasks,
+  activities,
+  onNavigate,
+  onOpenNewTask,
+  onStatusChange,
+}: {
+  tasks: Task[];
+  activities: ActivityItem[];
+  onNavigate: (view: ViewId) => void;
+  onOpenNewTask: () => void;
+  onStatusChange: (id: string, status: Status) => void;
+}) {
+  const [chartTab, setChartTab] = useState<"추진 실적" | "분야별 건수" | "완료율 추이">("추진 실적");
+
+  const totalCount = tasks.length;
+  const completedCount = tasks.filter((t) => t.status === "완료").length;
+  const inProgressCount = tasks.filter((t) => t.status === "진행 중").length;
+  const delayedCount = tasks.filter((t) => t.status === "지연 / 이슈").length;
+  const completionRate = totalCount ? Math.round((completedCount / totalCount) * 100) : 0;
+
+  // 4 Zenith KPI Cards with Sparklines
+  const kpiCards = [
+    {
+      key: "total",
+      title: "전체 등록 업무 (Total Tasks)",
+      value: `${totalCount}건`,
+      change: 12.5,
+      changeLabel: "전주 대비",
+      icon: Layers,
+      color: "text-chart-1",
+      bg: "bg-chart-1/10",
+      stroke: "var(--chart-1)",
+      sparkline: [3, 4, 3, 5, 4, 6, 5, 7, 6, 8, 7, totalCount || 5],
+    },
+    {
+      key: "completed",
+      title: "완료 업무 (Completed)",
+      value: `${completedCount}건 (${completionRate}%)`,
+      change: 8.2,
+      changeLabel: "목표 달성률",
+      icon: CheckCircle2,
+      color: "text-chart-2",
+      bg: "bg-chart-2/10",
+      stroke: "var(--chart-2)",
+      sparkline: [1, 2, 1, 2, 3, 2, 3, 4, 3, 4, 4, Math.max(1, completedCount)],
+    },
+    {
+      key: "progress",
+      title: "진행 중 업무 (In Progress)",
+      value: `${inProgressCount}건`,
+      change: 14.0,
+      changeLabel: "정상 추진 중",
+      icon: Clock,
+      color: "text-chart-3",
+      bg: "bg-chart-3/10",
+      stroke: "var(--chart-3)",
+      sparkline: [2, 2, 3, 2, 3, 4, 3, 3, 4, 3, 4, Math.max(1, inProgressCount)],
+    },
+    {
+      key: "delayed",
+      title: "지연 / 이슈 (Delayed & Issues)",
+      value: `${delayedCount}건`,
+      change: delayedCount > 0 ? -3.1 : 0,
+      changeLabel: delayedCount > 0 ? "집중 점검 필요" : "이슈 없음",
+      icon: AlertTriangle,
+      color: "text-chart-4",
+      bg: "bg-chart-4/10",
+      stroke: "var(--chart-4)",
+      sparkline: [2, 3, 2, 2, 1, 2, 1, 2, 1, 1, 2, delayedCount],
+    },
+  ];
+
+  // Field breakdown for Donut Chart & Bar Chart
+  const fieldDistribution = useMemo(() => {
+    const colors = [
+      "var(--chart-1)",
+      "var(--chart-2)",
+      "var(--chart-3)",
+      "var(--chart-5)",
+    ];
+    return FIELDS.map((field, idx) => {
+      const list = tasks.filter((t) => t.field === field);
+      const count = list.length;
+      const doneCount = list.filter((t) => t.status === "완료" || t.status === "진행 중").length;
+      const pct = totalCount ? Math.round((count / totalCount) * 100) : 25;
+      return {
+        name: field,
+        count,
+        doneCount,
+        value: pct,
+        color: colors[idx % colors.length]!,
+      };
+    });
+  }, [tasks, totalCount]);
+
+  // Goals Progress Bars
+  const fieldGoals = useMemo(() => {
+    const barColors = ["bg-chart-1", "bg-chart-2", "bg-chart-3", "bg-chart-5"];
+    return FIELDS.map((field, idx) => {
+      const list = tasks.filter((t) => t.field === field);
+      const activeOrDone = list.filter(
+        (t) => t.status === "완료" || t.status === "진행 중",
+      ).length;
+      const target = Math.max(list.length, 2);
+      return {
+        label: field,
+        current: activeOrDone,
+        target,
+        color: barColors[idx % barColors.length]!,
+      };
+    });
+  }, [tasks]);
+
+  return (
+    <div className="space-y-6">
+      {/* Page Title Header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">대시보드 (Dashboard)</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            주간업무보고 및 부서별 업무 추진 현황을 실시간으로 모니터링합니다.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => onNavigate("upload")} className={btnOutline}>
+            <FileSpreadsheet className="h-4 w-4" />
+            <span>엑셀 자료 올리기</span>
+          </button>
+          <button onClick={onOpenNewTask} className={btnPrimary}>
+            <Plus className="h-4 w-4" />
+            <span>새 업무 등록</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Row 1: 4 Zenith KPI Cards with Area Sparklines */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {kpiCards.map((card) => {
+          const Icon = card.icon;
+          const isPositive = card.change >= 0;
+          const sparkData = card.sparkline.map((v, i) => ({ idx: i, v }));
+          return (
+            <ZenithCard
+              key={card.key}
+              className="group relative overflow-hidden transition-all duration-300 hover:border-primary/20 hover:shadow-md"
+            >
+              <div className="p-5 pb-0">
+                <div className="flex items-start justify-between">
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">{card.title}</p>
+                    <p className="text-2xl font-bold tracking-tight">{card.value}</p>
+                    <div className="flex items-center gap-1.5">
+                      {isPositive ? (
+                        <TrendingUp className="h-3.5 w-3.5 text-success" />
+                      ) : (
+                        <TrendingDown className="h-3.5 w-3.5 text-destructive" />
+                      )}
+                      <span
+                        className={cn(
+                          "text-xs font-semibold",
+                          isPositive ? "text-success" : "text-destructive",
+                        )}
+                      >
+                        {isPositive ? "+" : ""}
+                        {card.change}%
+                      </span>
+                      <span className="text-xs text-muted-foreground">{card.changeLabel}</span>
+                    </div>
+                  </div>
+                  <div
+                    className={cn(
+                      "flex h-10 w-10 items-center justify-center rounded-xl transition-transform duration-300 group-hover:scale-110",
+                      card.bg,
+                    )}
+                  >
+                    <Icon className={cn("h-5 w-5", card.color)} />
+                  </div>
+                </div>
+              </div>
+              <div className="h-12 w-full pt-2">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={sparkData} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+                    <defs>
+                      <linearGradient id={`grad-${card.key}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={card.stroke} stopOpacity={0.22} />
+                        <stop offset="100%" stopColor={card.stroke} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <Area
+                      type="monotone"
+                      dataKey="v"
+                      stroke={card.stroke}
+                      strokeWidth={1.5}
+                      fill={`url(#grad-${card.key})`}
+                      dot={false}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </ZenithCard>
+          );
+        })}
+      </div>
+
+      {/* Row 2: Overview Chart (col-8) + Traffic/Field Sources & Monthly Goals (col-4) */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        {/* Overview Chart Card */}
+        <ZenithCard className="col-span-full xl:col-span-8 p-6">
+          <div className="flex flex-col gap-3 pb-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold">Overview · 업무 추진 추이</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                월별/주차별 업무 완료 실적 및 분야별 등록 건수
+              </p>
+            </div>
+            <div className="flex items-center gap-1 self-start rounded-lg bg-muted p-0.5">
+              {(["추진 실적", "분야별 건수", "완료율 추이"] as const).map((tabName) => (
+                <button
+                  key={tabName}
+                  onClick={() => setChartTab(tabName)}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-xs font-medium transition-all cursor-pointer",
+                    chartTab === tabName
+                      ? "bg-background text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {tabName}
                 </button>
               ))}
-            </nav>
-          </header>
-          <main className="mx-auto max-w-7xl p-6">
-            {tab === 0 && <Upload onAdd={(n) => { setTasks((p) => [...p, ...n]); notify(`${n.length}건이 반영되었습니다.`); }} />}
-            {tab === 1 && <Kanban tasks={tasks} setTasks={setTasks} notify={notify} />}
-            {tab === 2 && <Report tasks={tasks} notify={notify} />}
-          </main>
-        </>
-      )}
-      {toast && <div className="fixed bottom-6 right-6 z-50 rounded-lg bg-foreground px-4 py-3 text-sm text-background shadow-lg">{toast}</div>}
+            </div>
+          </div>
+
+          <div className="pt-4 h-[320px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              {chartTab === "분야별 건수" ? (
+                <BarChart data={fieldDistribution} barCategoryGap="25%">
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    vertical={false}
+                    stroke="var(--border)"
+                    strokeOpacity={0.6}
+                  />
+                  <XAxis
+                    dataKey="name"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "var(--muted-foreground)", fontSize: 12 }}
+                    dy={8}
+                  />
+                  <YAxis
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "var(--muted-foreground)", fontSize: 12 }}
+                    allowDecimals={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: "var(--popover)",
+                      borderColor: "var(--border)",
+                      borderRadius: "0.5rem",
+                      fontSize: "12px",
+                    }}
+                  />
+                  <Bar
+                    dataKey="count"
+                    name="등록 건수"
+                    fill="var(--chart-3)"
+                    radius={[6, 6, 0, 0]}
+                    maxBarSize={44}
+                  />
+                </BarChart>
+              ) : (
+                <AreaChart data={MONTHLY_TREND_DATA}>
+                  <defs>
+                    <linearGradient id="overviewGrad1" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.25} />
+                      <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="overviewGrad2" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--chart-2)" stopOpacity={0.25} />
+                      <stop offset="100%" stopColor="var(--chart-2)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    vertical={false}
+                    stroke="var(--border)"
+                    strokeOpacity={0.6}
+                  />
+                  <XAxis
+                    dataKey="month"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "var(--muted-foreground)", fontSize: 12 }}
+                    dy={8}
+                  />
+                  <YAxis
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "var(--muted-foreground)", fontSize: 12 }}
+                    tickFormatter={(v) => (chartTab === "완료율 추이" ? `${v}%` : `${v}건`)}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: "var(--popover)",
+                      borderColor: "var(--border)",
+                      borderRadius: "0.5rem",
+                      fontSize: "12px",
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey={chartTab === "추진 실적" ? "completed" : "rate"}
+                    name={chartTab === "추진 실적" ? "완료 업무 (건)" : "완료율 (%)"}
+                    stroke={chartTab === "추진 실적" ? "var(--chart-1)" : "var(--chart-2)"}
+                    strokeWidth={2}
+                    fill={
+                      chartTab === "추진 실적"
+                        ? "url(#overviewGrad1)"
+                        : "url(#overviewGrad2)"
+                    }
+                    dot={false}
+                    activeDot={{ r: 5, strokeWidth: 2, fill: "var(--background)" }}
+                  />
+                </AreaChart>
+              )}
+            </ResponsiveContainer>
+          </div>
+        </ZenithCard>
+
+        {/* Right Column: Donut Chart + Goals Progress */}
+        <div className="col-span-full flex flex-col gap-4 xl:col-span-4">
+          {/* Field Distribution Donut Card */}
+          <ZenithCard className="p-6">
+            <div className="pb-3">
+              <h2 className="text-base font-semibold">분야별 업무 비중</h2>
+              <p className="text-xs text-muted-foreground">4대 관리 분야별 등록 업무 분포</p>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="relative h-36 w-36 shrink-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={fieldDistribution}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={42}
+                      outerRadius={65}
+                      paddingAngle={3}
+                      dataKey="count"
+                      strokeWidth={0}
+                    >
+                      {fieldDistribution.map((entry, idx) => (
+                        <Cell key={idx} fill={entry.color} />
+                      ))}
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-lg font-bold">{totalCount}건</span>
+                  <span className="text-[10px] text-muted-foreground">전체 업무</span>
+                </div>
+              </div>
+              <div className="flex-1 space-y-3">
+                {fieldDistribution.map((item) => (
+                  <div key={item.name} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: item.color }}
+                      />
+                      <span className="text-xs text-muted-foreground">{item.name}</span>
+                    </div>
+                    <span className="text-xs font-semibold">
+                      {item.count}건 ({item.value}%)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </ZenithCard>
+
+          {/* Monthly/Weekly Goals Card */}
+          <ZenithCard className="flex-1 p-6">
+            <div className="pb-4">
+              <h2 className="text-base font-semibold">분야별 추진 달성률</h2>
+              <p className="text-xs text-muted-foreground">완료 및 정상 진행 업무 비율</p>
+            </div>
+            <div className="space-y-4">
+              {fieldGoals.map((goal) => {
+                const pct = Math.min(100, Math.round((goal.current / goal.target) * 100));
+                return (
+                  <div key={goal.label} className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-foreground">{goal.label}</span>
+                      <span className="text-muted-foreground">{pct}%</span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-primary/15">
+                      <div
+                        className={cn("h-full rounded-full transition-all duration-500", goal.color)}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>추진/완료: {goal.current}건</span>
+                      <span>등록 목표: {goal.target}건</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </ZenithCard>
+        </div>
+      </div>
+
+      {/* Row 3: Recent Tasks Table (col-8) + Recent Activity Feed (col-4) */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        {/* Recent Tasks Table (Zenith Recent Orders style) */}
+        <ZenithCard className="col-span-full xl:col-span-8 p-6">
+          <div className="flex flex-row items-center justify-between pb-4">
+            <div>
+              <h2 className="text-base font-semibold">최근 업무 현황 (Recent Tasks)</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                부서원별 담당 업무 및 실시간 진행 상태
+              </p>
+            </div>
+            <button
+              onClick={() => onNavigate("kanban")}
+              className="flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:text-primary/80 cursor-pointer"
+            >
+              <span>칸반 보드 보기</span>
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    담당자 / 분야
+                  </th>
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    코드
+                  </th>
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    업무명 · 추진현황
+                  </th>
+                  <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
+                    상태
+                  </th>
+                  <th className="pb-3 text-end text-xs font-medium text-muted-foreground">
+                    기한
+                  </th>
+                  <th className="pb-3 text-end text-xs font-medium text-muted-foreground">
+                    <span className="sr-only">상태 변경</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.slice(0, 7).map((t, idx) => (
+                  <tr
+                    key={t.id}
+                    className="group border-b border-border/50 last:border-0 transition-colors hover:bg-muted/30"
+                  >
+                    <td className="py-3.5 pr-3">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={cn(
+                            "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-[11px] font-bold text-white",
+                            AVATAR_GRADIENTS[idx % AVATAR_GRADIENTS.length],
+                          )}
+                        >
+                          {t.owner.slice(0, 2)}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">{t.owner}</p>
+                          <p className="text-xs text-muted-foreground">{t.field}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-3.5 pr-3">
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {t.code || `TSK-100${idx + 1}`}
+                      </span>
+                    </td>
+                    <td className="py-3.5 pr-3">
+                      <p className="text-sm font-medium">{t.title}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {t.progress || "추진현황 미입력"}
+                        {t.issue ? ` · ⚠ ${t.issue}` : ""}
+                      </p>
+                    </td>
+                    <td className="py-3.5 pr-3">
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold",
+                          statusBadgeStyle[t.status],
+                        )}
+                      >
+                        {t.status}
+                      </span>
+                    </td>
+                    <td className="py-3.5 text-end">
+                      <span className="text-xs font-semibold text-foreground">{t.due}</span>
+                    </td>
+                    <td className="py-3.5 pl-2 text-end">
+                      <select
+                        aria-label={`${t.title} 상태 변경`}
+                        value={t.status}
+                        onChange={(e) => onStatusChange(t.id, e.target.value as Status)}
+                        className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground cursor-pointer"
+                      >
+                        {STATUSES.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </ZenithCard>
+
+        {/* Recent Activity Feed (Zenith Recent Activity style) */}
+        <ZenithCard className="col-span-full xl:col-span-4 p-6">
+          <div className="flex flex-row items-center justify-between pb-4">
+            <div>
+              <h2 className="text-base font-semibold">최근 활동 (Recent Activity)</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                실시간 업무 업데이트 및 이슈 내역
+              </p>
+            </div>
+            <button
+              onClick={() => onNavigate("report")}
+              className="flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:text-primary/80 cursor-pointer"
+            >
+              <span>보고서 보기</span>
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <div className="space-y-0">
+            {activities.slice(0, 6).map((act) => {
+              const iconMap = {
+                issue: {
+                  icon: AlertTriangle,
+                  color: "text-destructive",
+                  bg: "bg-destructive/10",
+                },
+                complete: {
+                  icon: CheckCircle2,
+                  color: "text-chart-2",
+                  bg: "bg-chart-2/10",
+                },
+                task: {
+                  icon: Clock,
+                  color: "text-chart-1",
+                  bg: "bg-chart-1/10",
+                },
+                upload: {
+                  icon: FileSpreadsheet,
+                  color: "text-chart-3",
+                  bg: "bg-chart-3/10",
+                },
+                report: {
+                  icon: UserPlus,
+                  color: "text-chart-5",
+                  bg: "bg-chart-5/10",
+                },
+              };
+              const cfg = iconMap[act.type];
+              const ActIcon = cfg.icon;
+              return (
+                <div
+                  key={act.id}
+                  className="group flex gap-3 rounded-lg px-2 py-3 transition-colors hover:bg-muted/30"
+                >
+                  <div
+                    className={cn(
+                      "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+                      cfg.bg,
+                    )}
+                  >
+                    <ActIcon className={cn("h-4 w-4", cfg.color)} />
+                  </div>
+                  <div className="flex-1 space-y-0.5">
+                    <p className="text-sm font-medium leading-snug">{act.title}</p>
+                    <p className="text-xs text-muted-foreground leading-snug">
+                      {act.description}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground/60">{act.time}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </ZenithCard>
+      </div>
     </div>
   );
 }
 
-function Login({ onLogin }: { onLogin: () => void }) {
-  const [id, setId] = useState("");
-  const [pw, setPw] = useState("");
-  const [err, setErr] = useState("");
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!id || !pw) return setErr("아이디와 비밀번호를 입력해주세요.");
-    if (id !== "admin" || pw !== "1234") return setErr("아이디 또는 비밀번호가 올바르지 않습니다.");
-    onLogin();
-  };
-  return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
-        <h1 className="text-xl font-bold">업무관리 시스템 로그인</h1>
-        <p className="mt-1 text-sm text-muted-foreground">주간업무보고 및 칸반 관리 시스템입니다.</p>
-        <form onSubmit={submit} className="mt-6 space-y-4">
-          <div><label className="mb-1 block text-sm font-medium">아이디(이메일)</label><input className={inputCls} value={id} onChange={(e) => setId(e.target.value)} placeholder="admin" /></div>
-          <div><label className="mb-1 block text-sm font-medium">비밀번호</label><input type="password" className={inputCls} value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••" /></div>
-          {err && <p className="text-sm text-destructive">{err}</p>}
-          <button className={`${btnPrimary} w-full`}>로그인</button>
-          <p className="rounded-md bg-muted p-2 text-center text-xs text-muted-foreground">테스트 계정: admin / 1234</p>
-        </form>
-      </Card>
-    </div>
-  );
-}
-
+/* ============================================================================
+ * 2. UPLOAD VIEW (Excel/CSV Drag & Drop + Text Paste)
+ * ============================================================================ */
 async function readFiles(files: File[]) {
   const XLSX = await import("xlsx");
   const cur: Task[] = [];
@@ -133,15 +1702,29 @@ async function readFiles(files: File[]) {
   for (const file of files) {
     const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false });
     for (const name of wb.SheetNames) {
-      const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name]!, { header: 1, raw: false, defval: "" });
-      const tsv = rows.map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " ")).join("\t")).join("\n");
+      const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name]!, {
+        header: 1,
+        raw: false,
+        defval: "",
+      });
+      const tsv = rows
+        .map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " ")).join("\t"))
+        .join("\n");
       (name.includes("지난주") ? prev : cur).push(...parsePaste(tsv));
     }
   }
   return { cur, prev };
 }
 
-function DropZone({ title, hint, onFiles }: { title: string; hint: string; onFiles: (f: File[]) => void }) {
+function DropZone({
+  title,
+  hint,
+  onFiles,
+}: {
+  title: string;
+  hint: string;
+  onFiles: (f: File[]) => void;
+}) {
   const [over, setOver] = useState(false);
   const [names, setNames] = useState<string[]>([]);
   const handle = (list: FileList | null) => {
@@ -151,76 +1734,317 @@ function DropZone({ title, hint, onFiles }: { title: string; hint: string; onFil
     onFiles(f);
   };
   return (
-    <Card>
-      <h2 className="font-semibold">{title}</h2>
+    <ZenithCard className="p-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-base font-semibold">{title}</h2>
+        <span className="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+          .xlsx · .xls · .csv
+        </span>
+      </div>
       <label
-        onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setOver(true);
+        }}
         onDragLeave={() => setOver(false)}
-        onDrop={(e) => { e.preventDefault(); setOver(false); handle(e.dataTransfer.files); }}
-        className={`mt-3 flex h-48 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-4 text-center transition-colors ${over ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted"}`}>
-        <input type="file" multiple accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => { handle(e.target.files); e.target.value = ""; }} />
-        <span className="text-3xl">📂</span>
-        <p className="mt-2 text-sm font-medium">업무일지 파일을 끌어다 놓거나 눌러서 고르세요</p>
+        onDrop={(e) => {
+          e.preventDefault();
+          setOver(false);
+          handle(e.dataTransfer.files);
+        }}
+        className={cn(
+          "mt-4 flex h-48 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 text-center transition-all duration-200",
+          over
+            ? "border-primary bg-primary/5"
+            : "border-border hover:border-primary/40 hover:bg-muted/40",
+        )}
+      >
+        <input
+          type="file"
+          multiple
+          accept=".xlsx,.xls,.csv"
+          className="hidden"
+          onChange={(e) => {
+            handle(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <FileSpreadsheet className="h-6 w-6" />
+        </div>
+        <p className="mt-3 text-sm font-medium">
+          업무일지 파일을 끌어다 놓거나 눌러서 고르세요
+        </p>
         <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
       </label>
-      {names.length > 0 && <ul className="mt-3 space-y-1 text-xs text-muted-foreground">{names.map((n) => <li key={n}>📄 {n}</li>)}</ul>}
-    </Card>
+      {names.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
+          {names.map((n) => (
+            <li key={n} className="flex items-center gap-1.5">
+              <span>📄</span>
+              <span className="font-medium text-foreground">{n}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </ZenithCard>
   );
 }
 
-function Upload({ onAdd }: { onAdd: (t: Task[]) => void }) {
+function UploadView({
+  tasks,
+  onAdd,
+  onNavigate,
+}: {
+  tasks: Task[];
+  onAdd: (t: Task[]) => void;
+  onNavigate: (v: ViewId) => void;
+}) {
+  const [pasteText, setPasteText] = useState("");
+
   const run = async (files: File[], forcePrev: boolean) => {
     const { cur, prev } = await readFiles(files);
     const all = forcePrev ? [...cur, ...prev] : [...cur, ...prev];
     if (all.length) onAdd(all);
   };
+
+  const handlePasteSubmit = () => {
+    const parsed = parsePaste(pasteText);
+    if (parsed.length) {
+      onAdd(parsed);
+      setPasteText("");
+    }
+  };
+
   return (
-    <div className="space-y-4">
-      <p className="rounded-md border border-success/30 bg-success/10 px-4 py-2 text-sm text-success">🔒 데이터는 외부 서버로 전송되지 않고 브라우저 내에서만 안전하게 처리됩니다.</p>
-      <div className="grid gap-4 md:grid-cols-2">
-        <DropZone title="이번 주 업무일지 (팀원별 파일 여러 개 가능)" hint="「지난주」 이름의 시트가 함께 있으면 지난주 보고서로 읽습니다" onFiles={(f) => run(f, false)} />
-        <DropZone title="지난주 보고서" hint="엑셀(.xlsx, .xls) 또는 CSV 파일" onFiles={(f) => run(f, true)} />
+    <div className="space-y-6">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">1. 자료 올리기</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            팀원별 엑셀/CSV 업무일지를 드래그앤드롭하거나 표 데이터를 붙여넣어 일괄 등록합니다.
+          </p>
+        </div>
+        <button onClick={() => onNavigate("kanban")} className={btnOutline}>
+          <span>칸반 보드로 이동 ({tasks.length}건)</span>
+          <ArrowUpRight className="h-4 w-4" />
+        </button>
       </div>
-      <p className="text-xs text-muted-foreground">열 순서: 분야 · 업무명 · 담당자 · 기한 · 상태 · 추진현황 · 이슈</p>
+
+      <div className="flex items-center gap-2.5 rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
+        <ShieldCheck className="h-4 w-4 shrink-0" />
+        <span>
+          🔒 데이터는 외부 서버로 전송되지 않고 브라우저 내에서만 안전하게 처리됩니다.
+        </span>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <DropZone
+          title="이번 주 업무일지 (팀원별 파일 여러 개 가능)"
+          hint="「지난주」 이름의 시트가 함께 있으면 지난주 보고서로 읽습니다"
+          onFiles={(f) => run(f, false)}
+        />
+        <DropZone
+          title="지난주 보고서"
+          hint="엑셀(.xlsx, .xls) 또는 CSV 파일"
+          onFiles={(f) => run(f, true)}
+        />
+      </div>
+
+      {/* Direct Paste Box */}
+      <ZenithCard className="p-6">
+        <div className="flex items-center justify-between pb-3">
+          <div className="flex items-center gap-2">
+            <ClipboardPaste className="h-4 w-4 text-primary" />
+            <h2 className="text-base font-semibold">엑셀 / 표 텍스트 직접 붙여넣기</h2>
+          </div>
+          <span className="text-xs text-muted-foreground">
+            열 순서: 분야 · 업무명 · 담당자 · 기한 · 상태 · 추진현황 · 이슈
+          </span>
+        </div>
+        <textarea
+          rows={4}
+          value={pasteText}
+          onChange={(e) => setPasteText(e.target.value)}
+          placeholder={
+            "복리후생/총무\t사내 식당 메뉴 만족도 조사\t김민지\t2026-11-14\t진행 중\t설문 문항 확정\t\n자산\t노후 전산장비 교체 품의\t이준호\t2026-11-18\t대기\t견적 비교 중\t예산 협의 필요"
+          }
+          className={cn(inputCls, "font-mono text-xs")}
+        />
+        <div className="mt-3 flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">
+            탭(Tab), 쉼표(,), 파이프(|) 구분자를 자동으로 인식합니다.
+          </p>
+          <button
+            onClick={handlePasteSubmit}
+            disabled={!pasteText.trim()}
+            className={cn(btnPrimary, !pasteText.trim() && "opacity-50 pointer-events-none")}
+          >
+            붙여넣기 데이터 반영
+          </button>
+        </div>
+      </ZenithCard>
     </div>
   );
 }
 
-function Kanban({ tasks, setTasks, notify }: { tasks: Task[]; setTasks: React.Dispatch<React.SetStateAction<Task[]>>; notify: (m: string) => void }) {
-  const [open, setOpen] = useState(false);
+/* ============================================================================
+ * 3. KANBAN BOARD VIEW (Drag & Drop + Filters + New Task Modal)
+ * ============================================================================ */
+function KanbanView({
+  tasks,
+  setTasks,
+  notify,
+  onOpenNewTask,
+}: {
+  tasks: Task[];
+  setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
+  notify: (m: string) => void;
+  onOpenNewTask: () => void;
+}) {
   const [over, setOver] = useState<Status | null>(null);
-  const empty = { field: FIELDS[0] as string, title: "", owner: "", due: "", status: "대기" as Status, progress: "", issue: "" };
-  const [f, setF] = useState(empty);
+  const [selectedField, setSelectedField] = useState<string>("전체");
+  const [searchQuery, setSearchQuery] = useState("");
+
   const onDrop = (e: DragEvent, s: Status) => {
     const id = e.dataTransfer.getData("text/plain");
     setTasks((p) => p.map((t) => (t.id === id ? { ...t, status: s } : t)));
     setOver(null);
+    notify(`상태가 '${s}'(으)로 변경되었습니다.`);
   };
+
+  const filteredTasks = useMemo(() => {
+    return tasks.filter((t) => {
+      const matchesField = selectedField === "전체" || t.field === selectedField;
+      const q = searchQuery.trim().toLowerCase();
+      const matchesSearch =
+        !q ||
+        t.title.toLowerCase().includes(q) ||
+        t.owner.toLowerCase().includes(q) ||
+        t.progress.toLowerCase().includes(q);
+      return matchesField && matchesSearch;
+    });
+  }, [tasks, selectedField, searchQuery]);
+
   return (
-    <div>
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">카드를 끌어서 상태를 변경하세요.</p>
-        <button className={btnPrimary} onClick={() => setOpen(true)}>+ 새 업무 등록</button>
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">2. 진행상태 (칸반 보드)</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            카드를 끌어서 상태를 변경하세요.
+          </p>
+        </div>
+        <button className={btnPrimary} onClick={onOpenNewTask}>
+          + 새 업무 등록
+        </button>
       </div>
+
+      {/* Zenith Filter Bar */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {["전체", ...FIELDS].map((fd) => (
+            <button
+              key={fd}
+              onClick={() => setSelectedField(fd)}
+              className={cn(
+                "rounded-lg px-3 py-1.5 text-xs font-medium transition-all cursor-pointer",
+                selectedField === fd
+                  ? "bg-primary text-primary-foreground shadow-xs"
+                  : "border border-border bg-card text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {fd}
+            </button>
+          ))}
+        </div>
+        <div className="relative w-full sm:w-64">
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="업무명 또는 담당자 검색..."
+            className="h-9 w-full rounded-lg border border-input bg-card ps-9 pe-3 text-xs outline-none focus:border-primary"
+          />
+        </div>
+      </div>
+
+      {/* 4 Kanban Columns */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {STATUSES.map((s) => {
-          const list = tasks.filter((t) => t.status === s);
+          const list = filteredTasks.filter((t) => t.status === s);
           return (
-            <div key={s} onDragOver={(e) => { e.preventDefault(); setOver(s); }} onDragLeave={() => setOver(null)} onDrop={(e) => onDrop(e, s)}
-              className={`min-h-[400px] rounded-xl border-2 p-3 transition-colors ${over === s ? "border-primary bg-primary/5" : "border-transparent bg-muted"}`}>
-              <div className="mb-3 flex items-center justify-between px-1">
-                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusColor[s]}`}>{s}</span>
-                <span className="text-xs text-muted-foreground">{list.length}건</span>
+            <div
+              key={s}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setOver(s);
+              }}
+              onDragLeave={() => setOver(null)}
+              onDrop={(e) => onDrop(e, s)}
+              className={cn(
+                "min-h-[440px] rounded-xl border-2 p-3.5 transition-colors",
+                over === s
+                  ? "border-primary bg-primary/5"
+                  : "border-border/60 bg-muted/40",
+              )}
+            >
+              <div className="mb-3.5 flex items-center justify-between px-1">
+                <span
+                  className={cn(
+                    "rounded-full border px-2.5 py-0.5 text-xs font-semibold",
+                    statusBadgeStyle[s],
+                  )}
+                >
+                  {s}
+                </span>
+                <span className="rounded-full bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground shadow-2xs">
+                  {list.length}건
+                </span>
               </div>
-              <div className="space-y-2">
+
+              <div className="space-y-2.5">
                 {list.map((t) => (
-                  <div key={t.id} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
-                    className="cursor-grab rounded-lg border border-border bg-card p-3 shadow-sm active:cursor-grabbing">
-                    <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${fieldColor[t.field]}`}>{t.field}</span>
-                    <p className="mt-2 font-bold">{t.title}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">👤 {t.owner} · 📅 {t.due}</p>
-                    {t.progress && <p className="mt-1 text-xs">{t.progress}</p>}
-                    {t.issue && <span className="mt-2 inline-block rounded bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive">⚠ {t.issue}</span>}
+                  <div
+                    key={t.id}
+                    draggable
+                    onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
+                    className="group cursor-grab rounded-xl border border-border bg-card p-3.5 shadow-2xs transition-all duration-200 hover:border-primary/30 hover:shadow-md active:cursor-grabbing"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        className={cn(
+                          "rounded-md border px-2 py-0.5 text-[11px] font-medium",
+                          fieldColor[t.field] ?? "bg-primary/10 text-primary",
+                        )}
+                      >
+                        {t.field}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setTasks((prev) => prev.filter((item) => item.id !== t.id));
+                          notify("업무가 삭제되었습니다.");
+                        }}
+                        aria-label="업무 삭제"
+                        className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <p className="mt-2.5 text-sm font-bold leading-snug">{t.title}</p>
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      👤 {t.owner} · 📅 {t.due}
+                    </p>
+                    {t.progress && (
+                      <p className="mt-2 rounded-md bg-muted/60 px-2 py-1 text-xs text-foreground/90">
+                        {t.progress}
+                      </p>
+                    )}
+                    {t.issue && (
+                      <span className="mt-2 inline-block rounded-md border border-destructive/20 bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
+                        ⚠ {t.issue}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -228,36 +2052,14 @@ function Kanban({ tasks, setTasks, notify }: { tasks: Task[]; setTasks: React.Di
           );
         })}
       </div>
-      {open && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-foreground/40 p-4" onClick={() => setOpen(false)}>
-          <Card className="w-full max-w-md">
-            <div onClick={(e) => e.stopPropagation()} className="space-y-3">
-              <h2 className="text-lg font-bold">새 업무 등록</h2>
-              <input className={inputCls} placeholder="업무명" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} />
-              <div className="grid grid-cols-2 gap-2">
-                <select className={inputCls} value={f.field} onChange={(e) => setF({ ...f, field: e.target.value })}>{FIELDS.map((x) => <option key={x}>{x}</option>)}</select>
-                <select className={inputCls} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value as Status })}>{STATUSES.map((x) => <option key={x}>{x}</option>)}</select>
-                <input className={inputCls} placeholder="담당자" value={f.owner} onChange={(e) => setF({ ...f, owner: e.target.value })} />
-                <input type="date" className={inputCls} value={f.due} onChange={(e) => setF({ ...f, due: e.target.value })} />
-              </div>
-              <input className={inputCls} placeholder="추진현황" value={f.progress} onChange={(e) => setF({ ...f, progress: e.target.value })} />
-              <input className={inputCls} placeholder="이슈 (없으면 비워두세요)" value={f.issue} onChange={(e) => setF({ ...f, issue: e.target.value })} />
-              <div className="flex justify-end gap-2 pt-2">
-                <button className={btnOutline} onClick={() => setOpen(false)}>취소</button>
-                <button className={btnPrimary} onClick={() => {
-                  if (!f.title.trim()) return notify("업무명을 입력해주세요.");
-                  setTasks((p) => [...p, { ...f, id: uid() }]); setF(empty); setOpen(false); notify("새 업무가 등록되었습니다.");
-                }}>등록</button>
-              </div>
-            </div>
-          </Card>
-        </div>
-      )}
     </div>
   );
 }
 
-function Report({ tasks, notify }: { tasks: Task[]; notify: (m: string) => void }) {
+/* ============================================================================
+ * 4. WEEKLY REPORT VIEW (주간업무보고서)
+ * ============================================================================ */
+function ReportView({ tasks, notify }: { tasks: Task[]; notify: (m: string) => void }) {
   const cnt = (s: Status) => tasks.filter((t) => t.status === s).length;
   const delayed = tasks.filter((t) => t.status === "지연 / 이슈");
   const done = (l: Task[]) => l.filter((t) => t.status === "완료" || t.status === "진행 중");
@@ -267,52 +2069,718 @@ function Report({ tasks, notify }: { tasks: Task[]; notify: (m: string) => void 
     let s = `주간업무보고서\n\nⅠ. 전체 요약\n총 ${tasks.length}건 (완료 ${cnt("완료")} / 진행 중 ${cnt("진행 중")} / 대기 ${cnt("대기")} / 지연 ${cnt("지연 / 이슈")})\n\nⅡ. 분야별 실적\n`;
     FIELDS.forEach((fd) => {
       const l = tasks.filter((t) => t.field === fd);
-      s += `\n[${fd}]\n 금주 실적:\n${done(l).map((t) => `  - ${t.title} (${t.owner}): ${t.progress}`).join("\n") || "  - 없음"}\n 차주 계획:\n${next(l).map((t) => `  - ${t.title} (~${t.due})`).join("\n") || "  - 없음"}\n`;
+      s += `\n[${fd}]\n 금주 실적:\n${
+        done(l)
+          .map((t) => `  - ${t.title} (${t.owner}): ${t.progress}`)
+          .join("\n") || "  - 없음"
+      }\n 차주 계획:\n${
+        next(l)
+          .map((t) => `  - ${t.title} (~${t.due})`)
+          .join("\n") || "  - 없음"
+      }\n`;
     });
-    s += `\nⅢ. 주요 이슈 및 지연 업무\n${delayed.map((t) => `  - ${t.title} (${t.owner}): ${t.issue || t.progress}`).join("\n") || "  - 없음"}`;
-    try { await navigator.clipboard.writeText(s); notify("보고서 텍스트가 클립보드에 복사되었습니다."); } catch { notify("복사에 실패했습니다."); }
+    s += `\nⅢ. 주요 이슈 및 지연 업무\n${
+      delayed.map((t) => `  - ${t.title} (${t.owner}): ${t.issue || t.progress}`).join("\n") ||
+      "  - 없음"
+    }`;
+    try {
+      await navigator.clipboard.writeText(s);
+      notify("보고서 텍스트가 클립보드에 복사되었습니다.");
+    } catch {
+      notify("복사에 실패했습니다.");
+    }
   };
 
   return (
-    <Card className="space-y-8">
-      <div className="flex items-center justify-between border-b border-border pb-4">
-        <h2 className="text-2xl font-bold">주간업무보고서</h2>
-        <button className={btnPrimary} onClick={copy}>📋 보고서 텍스트 복사</button>
+    <ZenithCard className="space-y-8 p-6 sm:p-8">
+      <div className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight">주간업무보고서</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            등록된 업무 데이터를 기반으로 자동 생성된 부서 주간업무보고서입니다.
+          </p>
+        </div>
+        <button className={btnPrimary} onClick={copy}>
+          <Copy className="h-4 w-4" />
+          <span>📋 보고서 텍스트 복사</span>
+        </button>
       </div>
+
       <section>
-        <h3 className="mb-3 text-lg font-bold">Ⅰ. 전체 요약</h3>
+        <h3 className="mb-3 text-base font-bold">Ⅰ. 전체 요약</h3>
         <div className="flex flex-wrap gap-2 text-sm">
-          <span className="rounded-full bg-foreground px-3 py-1 font-semibold text-background">총 {tasks.length}건</span>
-          {STATUSES.map((s) => <span key={s} className={`rounded-full px-3 py-1 font-semibold ${statusColor[s]}`}>{s} {cnt(s)}건</span>)}
+          <span className="rounded-full bg-foreground px-3.5 py-1 text-xs font-semibold text-background">
+            총 {tasks.length}건
+          </span>
+          {STATUSES.map((s) => (
+            <span
+              key={s}
+              className={cn(
+                "rounded-full border px-3.5 py-1 text-xs font-semibold",
+                statusBadgeStyle[s],
+              )}
+            >
+              {s} {cnt(s)}건
+            </span>
+          ))}
         </div>
       </section>
+
       <section>
-        <h3 className="mb-3 text-lg font-bold">Ⅱ. 분야별 실적</h3>
-        <table className="w-full border-collapse text-sm">
-          <thead><tr className="bg-muted">{["분야", "금주 실적", "차주 계획"].map((h) => <th key={h} className="border border-border p-2 text-left">{h}</th>)}</tr></thead>
-          <tbody>
-            {FIELDS.map((fd) => {
-              const l = tasks.filter((t) => t.field === fd);
-              return (
-                <tr key={fd} className="align-top">
-                  <td className="w-36 border border-border p-2 font-semibold">{fd}</td>
-                  <td className="border border-border p-2">{done(l).length ? done(l).map((t) => <div key={t.id}>• {t.title} ({t.owner}) – {t.progress}</div>) : <span className="text-muted-foreground">없음</span>}</td>
-                  <td className="border border-border p-2">{next(l).length ? next(l).map((t) => <div key={t.id}>• {t.title} (~{t.due})</div>) : <span className="text-muted-foreground">없음</span>}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <h3 className="mb-3 text-base font-bold">Ⅱ. 분야별 실적</h3>
+        <div className="overflow-x-auto rounded-xl border border-border">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/60">
+                {["분야", "금주 실적", "차주 계획"].map((h) => (
+                  <th
+                    key={h}
+                    className="border-r border-border last:border-r-0 px-4 py-3 text-left text-xs font-semibold text-muted-foreground"
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {FIELDS.map((fd) => {
+                const l = tasks.filter((t) => t.field === fd);
+                return (
+                  <tr
+                    key={fd}
+                    className="border-b border-border last:border-b-0 align-top transition-colors hover:bg-muted/20"
+                  >
+                    <td className="w-40 border-r border-border px-4 py-3.5 font-semibold">
+                      {fd}
+                    </td>
+                    <td className="border-r border-border px-4 py-3.5 space-y-1">
+                      {done(l).length ? (
+                        done(l).map((t) => (
+                          <div key={t.id} className="text-sm">
+                            • <span className="font-medium">{t.title}</span> ({t.owner}) –{" "}
+                            <span className="text-muted-foreground">{t.progress}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="text-muted-foreground">없음</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3.5 space-y-1">
+                      {next(l).length ? (
+                        next(l).map((t) => (
+                          <div key={t.id} className="text-sm">
+                            • <span className="font-medium">{t.title}</span>{" "}
+                            <span className="text-xs text-muted-foreground">(~{t.due})</span>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="text-muted-foreground">없음</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </section>
+
       <section>
-        <h3 className="mb-3 text-lg font-bold">Ⅲ. 주요 이슈 및 지연 업무</h3>
-        {delayed.length ? delayed.map((t) => (
-          <div key={t.id} className="mb-2 rounded-lg border-l-4 border-destructive bg-destructive/10 p-4">
-            <p className="font-bold text-destructive">⚠ {t.title} <span className="font-normal">({t.field} · {t.owner} · {t.due})</span></p>
-            <p className="mt-1 text-sm">이슈: {t.issue || "-"} / 추진현황: {t.progress}</p>
+        <h3 className="mb-3 text-base font-bold">Ⅲ. 주요 이슈 및 지연 업무</h3>
+        {delayed.length ? (
+          <div className="space-y-2.5">
+            {delayed.map((t) => (
+              <div
+                key={t.id}
+                className="rounded-xl border border-destructive/25 border-l-4 border-l-destructive bg-destructive/10 p-4"
+              >
+                <p className="font-bold text-destructive">
+                  ⚠ {t.title}{" "}
+                  <span className="text-xs font-normal text-foreground/80">
+                    ({t.field} · {t.owner} · {t.due})
+                  </span>
+                </p>
+                <p className="mt-1 text-sm text-foreground/90">
+                  이슈: {t.issue || "-"} / 추진현황: {t.progress}
+                </p>
+              </div>
+            ))}
           </div>
-        )) : <p className="text-sm text-muted-foreground">지연 업무가 없습니다.</p>}
+        ) : (
+          <p className="text-sm text-muted-foreground">지연 업무가 없습니다.</p>
+        )}
       </section>
-    </Card>
+    </ZenithCard>
+  );
+}
+
+/* ============================================================================
+ * 5. NEW TASK MODAL
+ * ============================================================================ */
+function NewTaskModal({
+  onClose,
+  onCreate,
+  notify,
+}: {
+  onClose: () => void;
+  onCreate: (t: Task) => void;
+  notify: (m: string) => void;
+}) {
+  const empty = {
+    field: FIELDS[0] as string,
+    title: "",
+    owner: "",
+    due: "2026-11-15",
+    status: "대기" as Status,
+    progress: "",
+    issue: "",
+  };
+  const [f, setF] = useState(empty);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs"
+      onClick={onClose}
+    >
+      <ZenithCard className="w-full max-w-md p-6 shadow-xl">
+        <div onClick={(e) => e.stopPropagation()} className="space-y-3.5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-bold">새 업무 등록</h2>
+            <button
+              onClick={onClose}
+              className="rounded-md p-1 text-muted-foreground hover:bg-accent"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <input
+            className={inputCls}
+            placeholder="업무명"
+            value={f.title}
+            onChange={(e) => setF({ ...f, title: e.target.value })}
+          />
+          <div className="grid grid-cols-2 gap-2.5">
+            <select
+              className={inputCls}
+              value={f.field}
+              onChange={(e) => setF({ ...f, field: e.target.value })}
+            >
+              {FIELDS.map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+            <select
+              className={inputCls}
+              value={f.status}
+              onChange={(e) => setF({ ...f, status: e.target.value as Status })}
+            >
+              {STATUSES.map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+            <input
+              className={inputCls}
+              placeholder="담당자"
+              value={f.owner}
+              onChange={(e) => setF({ ...f, owner: e.target.value })}
+            />
+            <input
+              type="date"
+              className={inputCls}
+              value={f.due}
+              onChange={(e) => setF({ ...f, due: e.target.value })}
+            />
+          </div>
+          <input
+            className={inputCls}
+            placeholder="추진현황"
+            value={f.progress}
+            onChange={(e) => setF({ ...f, progress: e.target.value })}
+          />
+          <input
+            className={inputCls}
+            placeholder="이슈 (없으면 비워두세요)"
+            value={f.issue}
+            onChange={(e) => setF({ ...f, issue: e.target.value })}
+          />
+          <div className="flex justify-end gap-2 pt-2">
+            <button className={btnOutline} onClick={onClose}>
+              취소
+            </button>
+            <button
+              className={btnPrimary}
+              onClick={() => {
+                if (!f.title.trim()) return notify("업무명을 입력해주세요.");
+                onCreate({
+                  ...f,
+                  owner: f.owner.trim() || "담당자",
+                  id: uid(),
+                  code: nextCode(),
+                });
+              }}
+            >
+              등록
+            </button>
+          </div>
+        </div>
+      </ZenithCard>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 6. ZENITH COMMAND PALETTE (⌘K)
+ * ============================================================================ */
+function CommandPaletteModal({
+  tasks,
+  onClose,
+  onSelectView,
+  onNewTask,
+  onToggleTheme,
+  onLogout,
+}: {
+  tasks: Task[];
+  onClose: () => void;
+  onSelectView: (v: ViewId) => void;
+  onNewTask: () => void;
+  onToggleTheme: () => void;
+  onLogout: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const query = q.trim().toLowerCase();
+
+  const pages = [
+    { id: "dashboard" as ViewId, label: "대시보드 (Overview)", icon: LayoutDashboard },
+    { id: "upload" as ViewId, label: "1. 자료 올리기 (엑셀/CSV)", icon: UploadIcon },
+    { id: "kanban" as ViewId, label: "2. 진행상태 (칸반 보드)", icon: KanbanIcon },
+    { id: "report" as ViewId, label: "3. 주간업무보고서", icon: FileText },
+  ].filter((p) => !query || p.label.toLowerCase().includes(query));
+
+  const matchingTasks = tasks
+    .filter(
+      (t) =>
+        !query ||
+        t.title.toLowerCase().includes(query) ||
+        t.owner.toLowerCase().includes(query) ||
+        t.field.toLowerCase().includes(query),
+    )
+    .slice(0, 4);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-20 p-4 backdrop-blur-xs"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl"
+      >
+        <div className="flex items-center border-b border-border px-3">
+          <Search className="me-2 h-4 w-4 text-muted-foreground" />
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="페이지 이동, 업무 검색 또는 명령어 입력..."
+            className="h-11 w-full bg-transparent text-sm outline-none"
+          />
+          <button
+            onClick={onClose}
+            className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
+          >
+            ESC
+          </button>
+        </div>
+        <div className="max-h-80 overflow-y-auto p-2 space-y-3">
+          {pages.length > 0 && (
+            <div>
+              <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Pages
+              </p>
+              {pages.map((p) => {
+                const Icon = p.icon;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => onSelectView(p.id)}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium hover:bg-accent cursor-pointer"
+                  >
+                    <Icon className="h-4 w-4 text-muted-foreground" />
+                    <span>{p.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {matchingTasks.length > 0 && (
+            <div>
+              <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Tasks ({matchingTasks.length})
+              </p>
+              {matchingTasks.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => onSelectView("kanban")}
+                  className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs hover:bg-accent cursor-pointer"
+                >
+                  <div className="truncate text-start">
+                    <span className="font-medium">{t.title}</span>
+                    <span className="ms-2 text-muted-foreground">({t.owner})</span>
+                  </div>
+                  <span
+                    className={cn(
+                      "rounded border px-1.5 py-0.5 text-[10px] font-semibold",
+                      statusBadgeStyle[t.status],
+                    )}
+                  >
+                    {t.status}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div>
+            <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Quick Actions
+            </p>
+            <button
+              onClick={onNewTask}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium hover:bg-accent cursor-pointer"
+            >
+              <Plus className="h-4 w-4 text-muted-foreground" />
+              <span>새 업무 등록</span>
+            </button>
+            <button
+              onClick={onToggleTheme}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium hover:bg-accent cursor-pointer"
+            >
+              <Sun className="h-4 w-4 text-muted-foreground" />
+              <span>라이트 / 다크 테마 전환</span>
+            </button>
+            <button
+              onClick={onLogout}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium text-destructive hover:bg-destructive/10 cursor-pointer"
+            >
+              <LogIn className="h-4 w-4" />
+              <span>로그인 화면으로 이동</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 7. ZENITH LIVE THEME CUSTOMIZER DRAWER
+ * ============================================================================ */
+function ThemeCustomizerDrawer({
+  theme,
+  setTheme,
+  colorPreset,
+  setColorPreset,
+  density,
+  setDensity,
+  layout,
+  setLayout,
+  container,
+  setContainer,
+  onReset,
+  onClose,
+}: {
+  theme: ThemeMode;
+  setTheme: (t: ThemeMode) => void;
+  colorPreset: ColorPreset;
+  setColorPreset: (c: ColorPreset) => void;
+  density: DensityMode;
+  setDensity: (d: DensityMode) => void;
+  layout: LayoutMode;
+  setLayout: (l: LayoutMode) => void;
+  container: ContainerMode;
+  setContainer: (c: ContainerMode) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-xs" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex h-full w-80 flex-col border-l border-border bg-background shadow-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <div>
+            <h2 className="text-base font-bold">Customize</h2>
+            <p className="text-xs text-muted-foreground">
+              Zenith 대시보드 스타일을 맞춤 설정하세요.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-muted-foreground hover:bg-accent"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 space-y-6 overflow-y-auto p-5">
+          {/* Theme */}
+          <div className="space-y-2.5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Theme
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              {(
+                [
+                  { value: "light", label: "Light", icon: Sun },
+                  { value: "dark", label: "Dark", icon: Moon },
+                  { value: "system", label: "System", icon: Monitor },
+                ] as const
+              ).map((item) => {
+                const Icon = item.icon;
+                const active = theme === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    onClick={() => setTheme(item.value)}
+                    className={cn(
+                      "flex flex-col items-center gap-1.5 rounded-lg border-2 p-2.5 transition-all cursor-pointer",
+                      active
+                        ? "border-primary bg-primary/5 text-primary"
+                        : "border-border hover:border-primary/30 text-muted-foreground",
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="text-xs font-medium">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Color Preset */}
+          <div className="space-y-2.5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Color Preset
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              {COLOR_PRESETS.map((preset) => {
+                const active = colorPreset === preset.key;
+                return (
+                  <button
+                    key={preset.key}
+                    onClick={() => setColorPreset(preset.key)}
+                    className={cn(
+                      "flex flex-col items-center gap-1.5 rounded-lg border-2 p-2.5 transition-all cursor-pointer",
+                      active
+                        ? "border-primary bg-primary/5 text-primary"
+                        : "border-border hover:border-primary/30 text-muted-foreground",
+                    )}
+                  >
+                    <span
+                      data-preset-swatch={preset.key}
+                      className={cn(
+                        "inline-block h-5 w-5 rounded-full",
+                        active && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+                      )}
+                    />
+                    <span className="text-xs font-medium">{preset.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Density */}
+          <div className="space-y-2.5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Density
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              {(
+                [
+                  { value: "compact", label: "Compact" },
+                  { value: "comfortable", label: "Comfort" },
+                  { value: "spacious", label: "Spacious" },
+                ] as const
+              ).map((d) => {
+                const active = density === d.value;
+                return (
+                  <button
+                    key={d.value}
+                    onClick={() => setDensity(d.value)}
+                    className={cn(
+                      "rounded-lg border-2 p-2.5 text-xs font-medium transition-all cursor-pointer",
+                      active
+                        ? "border-primary bg-primary/5 text-primary"
+                        : "border-border hover:border-primary/30 text-muted-foreground",
+                    )}
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Layout */}
+          <div className="space-y-2.5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Navigation Layout
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  { value: "sidebar", label: "Sidebar", icon: PanelLeft },
+                  { value: "topnav", label: "Top Nav", icon: PanelTop },
+                ] as const
+              ).map((l) => {
+                const Icon = l.icon;
+                const active = layout === l.value;
+                return (
+                  <button
+                    key={l.value}
+                    onClick={() => setLayout(l.value)}
+                    className={cn(
+                      "flex flex-col items-center gap-1.5 rounded-lg border-2 p-2.5 transition-all cursor-pointer",
+                      active
+                        ? "border-primary bg-primary/5 text-primary"
+                        : "border-border hover:border-primary/30 text-muted-foreground",
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="text-xs font-medium">{l.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Container */}
+          <div className="space-y-2.5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Container
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  { value: "fluid", label: "Fluid", icon: Maximize2 },
+                  { value: "boxed", label: "Boxed", icon: Minimize2 },
+                ] as const
+              ).map((c) => {
+                const Icon = c.icon;
+                const active = container === c.value;
+                return (
+                  <button
+                    key={c.value}
+                    onClick={() => setContainer(c.value)}
+                    className={cn(
+                      "flex flex-col items-center gap-1.5 rounded-lg border-2 p-2.5 transition-all cursor-pointer",
+                      active
+                        ? "border-primary bg-primary/5 text-primary"
+                        : "border-border hover:border-primary/30 text-muted-foreground",
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="text-xs font-medium">{c.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-border p-4">
+          <button onClick={onReset} className={cn(btnOutline, "w-full")}>
+            Reset to Defaults
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 8. ZENITH AUTH LOGIN SCREEN (Accessible from Logout / Sidebar)
+ * ============================================================================ */
+export function Login({
+  onLogin,
+  onQuickAccess,
+}: {
+  onLogin: (id: string) => void;
+  onQuickAccess?: () => void;
+}) {
+  const [id, setId] = useState("");
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!id || !pw) return setErr("아이디와 비밀번호를 입력해주세요.");
+    if (id !== "admin" || pw !== "1234")
+      return setErr("아이디 또는 비밀번호가 올바르지 않습니다.");
+    onLogin(id);
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
+      <ZenithCard className="w-full max-w-sm p-6 sm:p-8 shadow-lg">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
+            <Layers className="h-4 w-4 text-primary-foreground" />
+          </div>
+          <div>
+            <span className="text-sm font-bold tracking-tight">Zenith</span>
+            <span className="block text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+              Admin Dashboard
+            </span>
+          </div>
+        </div>
+
+        <h1 className="text-xl font-bold tracking-tight">업무관리 시스템 로그인</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          주간업무보고 및 칸반 관리 시스템입니다.
+        </p>
+
+        <form onSubmit={submit} className="mt-6 space-y-4">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium">아이디(이메일)</label>
+            <input
+              className={inputCls}
+              value={id}
+              onChange={(e) => setId(e.target.value)}
+              placeholder="admin"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium">비밀번호</label>
+            <input
+              type="password"
+              className={inputCls}
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              placeholder="••••"
+            />
+          </div>
+          {err && <p className="text-sm text-destructive">{err}</p>}
+          <button type="submit" className={cn(btnPrimary, "w-full")}>
+            로그인
+          </button>
+          {onQuickAccess && (
+            <button
+              type="button"
+              onClick={onQuickAccess}
+              className={cn(btnOutline, "w-full text-xs")}
+            >
+              대시보드로 바로 돌아가기
+            </button>
+          )}
+          <p className="rounded-lg bg-muted p-2.5 text-center text-xs text-muted-foreground">
+            테스트 계정: admin / 1234
+          </p>
+        </form>
+      </ZenithCard>
+    </div>
   );
 }
