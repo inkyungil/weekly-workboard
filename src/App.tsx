@@ -45,7 +45,6 @@ import {
   Maximize2,
   Minimize2,
   Database,
-  KeyRound,
   Lock,
 } from "lucide-react";
 import {
@@ -69,6 +68,8 @@ import {
   SUPABASE_URL,
   SUPABASE_PROJECT_REF,
   SUPABASE_INIT_SQL,
+  fetchProfile,
+  mapAppUserRow,
   loadLocalUsers,
   saveLocalUsers,
   type AppUser,
@@ -347,76 +348,51 @@ export default function App() {
     saveLocalUsers(users);
   }, [users]);
 
+  // 로그인 후 tasks / app_users 를 Supabase 에서 불러옴 (RLS 상 인증 사용자만 조회 가능)
+  const loadRemoteData = async (isMounted: () => boolean = () => true) => {
+    const { data: remoteTasks, error: tasksErr } = await supabase
+      .from("tasks")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (!tasksErr && Array.isArray(remoteTasks) && isMounted()) {
+      setDbTableReady(true);
+      if (remoteTasks.length > 0) {
+        setTasks(remoteTasks as Task[]);
+      }
+    }
+
+    const { data: remoteUsers, error: usersErr } = await supabase
+      .from("app_users")
+      .select("*")
+      .order("created_at", { ascending: true });
+
+    if (!usersErr && Array.isArray(remoteUsers) && remoteUsers.length > 0 && isMounted()) {
+      setDbTableReady(true);
+      setUsers(remoteUsers.map(mapAppUserRow));
+    }
+  };
+
   // Initial Supabase session & database sync
   useEffect(() => {
     let mounted = true;
 
     async function initSupabase() {
       try {
-        // 1. Check active Supabase Auth session
+        // 1. Check active Supabase Auth session → 권한/활성 여부는 app_users 기준
         const { data: sessionData } = await supabase.auth.getSession();
-        if (mounted && sessionData?.session?.user) {
-          const authUser = sessionData.session.user;
-          const meta = authUser.user_metadata ?? {};
-          setCurrentUser({
-            id: authUser.id,
-            username:
-              String(meta["username"] || "") ||
-              authUser.email?.split("@")[0] ||
-              "user",
-            email: authUser.email || "",
-            name:
-              String(meta["name"] || "") ||
-              authUser.email?.split("@")[0] ||
-              "사용자",
-            department: String(meta["department"] || "복리후생/총무"),
-            role: (meta["role"] as UserRole) || "관리자",
-            is_active: true,
-            created_by: "supabase",
-            created_at: authUser.created_at?.slice(0, 10) || "2026-11-04",
-          });
-          setIsLoggedIn(true);
+        const authUser = sessionData?.session?.user;
+        if (!authUser) return;
+
+        const profile = await fetchProfile(authUser.id);
+        if (!mounted) return;
+        if (!profile || !profile.is_active) {
+          await supabase.auth.signOut();
+          return;
         }
-
-        // 2. Load tasks from Supabase public.tasks if table exists
-        const { data: remoteTasks, error: tasksErr } = await supabase
-          .from("tasks")
-          .select("*")
-          .order("created_at", { ascending: false });
-
-        if (!tasksErr && Array.isArray(remoteTasks)) {
-          if (mounted) {
-            setDbTableReady(true);
-            if (remoteTasks.length > 0) {
-              setTasks(remoteTasks as Task[]);
-            }
-          }
-        }
-
-        // 3. Load app_users from Supabase public.app_users if table exists
-        const { data: remoteUsers, error: usersErr } = await supabase
-          .from("app_users")
-          .select("*")
-          .order("created_at", { ascending: true });
-
-        if (!usersErr && Array.isArray(remoteUsers) && remoteUsers.length > 0 && mounted) {
-          setDbTableReady(true);
-          setUsers(
-            remoteUsers.map((u) => ({
-              id: String(u.id),
-              username: String(u.username),
-              email: String(u.email),
-              password: String(u.password_hash || "1234"),
-              name: String(u.name),
-              department: String(u.department || "복리후생/총무"),
-              role: (u.role as UserRole) || "팀원",
-              is_active: Boolean(u.is_active ?? true),
-              created_by: String(u.created_by || "admin"),
-              created_at: String(u.created_at || "").slice(0, 10) || "2026-11-04",
-              supabase_synced: true,
-            })),
-          );
-        }
+        setCurrentUser(profile);
+        setIsLoggedIn(true);
+        await loadRemoteData(() => mounted);
       } catch {
         if (mounted) setSupabaseConnected(false);
       }
@@ -548,10 +524,10 @@ export default function App() {
     return (
       <>
         <Login
-          users={users}
           onLoginSuccess={(loggedInUser) => {
             setCurrentUser(loggedInUser);
             setIsLoggedIn(true);
+            void loadRemoteData();
             notify(`${loggedInUser.name} (${loggedInUser.role}) 님 환영합니다!`);
           }}
         />
@@ -1282,10 +1258,8 @@ export default function App() {
  * 0. SUPABASE LOGIN SCREEN (회원가입은 관리자가 직접 수동등록으로 진행)
  * ============================================================================ */
 export function Login({
-  users,
   onLoginSuccess,
 }: {
-  users: AppUser[];
   onLoginSuccess: (user: AppUser) => void;
 }) {
   const [id, setId] = useState("");
@@ -1303,83 +1277,24 @@ export function Login({
 
     setLoading(true);
     try {
-      // 1. Check Admin-Registered Synced Users Registry first for instant response
-      const matchedLocal = users.find(
-        (u) =>
-          u.username.toLowerCase() === trimmedId.toLowerCase() ||
-          u.email.toLowerCase() === trimmedId.toLowerCase(),
-      );
-
-      if (matchedLocal) {
-        if (!matchedLocal.is_active) {
-          setLoading(false);
-          return setErr("비활성화된 계정입니다. 관리자에게 문의하세요.");
-        }
-        if ((matchedLocal.password ?? "1234") === pw) {
-          // Non-blocking background Supabase Auth session sync
-          void supabase.auth
-            .signInWithPassword({
-              email: matchedLocal.email,
-              password: pw.length >= 6 ? pw : `${pw}00`,
-            })
-            .catch(() => {});
-          setLoading(false);
-          return onLoginSuccess(matchedLocal);
-        }
-      }
-
-      // 2. Check Supabase public.app_users table if migrated
-      const { data: remoteUser } = await supabase
-        .from("app_users")
-        .select("*")
-        .or(`username.eq.${trimmedId},email.eq.${trimmedId}`)
-        .maybeSingle();
-
-      if (remoteUser) {
-        if (!remoteUser.is_active) {
-          setLoading(false);
-          return setErr("비활성화된 계정입니다. 관리자에게 문의하세요.");
-        }
-        if (String(remoteUser.password_hash) === pw) {
-          setLoading(false);
-          return onLoginSuccess({
-            id: String(remoteUser.id),
-            username: String(remoteUser.username),
-            email: String(remoteUser.email),
-            name: String(remoteUser.name),
-            department: String(remoteUser.department || "복리후생/총무"),
-            role: (remoteUser.role as UserRole) || "팀원",
-            is_active: true,
-            created_by: String(remoteUser.created_by || "admin"),
-            created_at: String(remoteUser.created_at || "").slice(0, 10),
-          });
-        }
-      }
-
-      // 3. Try direct Supabase Auth signInWithPassword
-      const emailToTry = trimmedId.includes("@")
-        ? trimmedId
-        : `${trimmedId}@zenith.kr`;
-      const { data: authData, error: authErr } =
-        await supabase.auth.signInWithPassword({
-          email: emailToTry,
-          password: pw,
-        });
+      // 아이디(username) 또는 이메일로 Supabase Auth 로그인 — 비밀번호 검증은 서버에서만 수행
+      const email = trimmedId.includes("@") ? trimmedId : `${trimmedId}@zenith.kr`;
+      const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+        email,
+        password: pw,
+      });
 
       if (!authErr && authData?.user) {
-        const meta = authData.user.user_metadata ?? {};
-        setLoading(false);
-        return onLoginSuccess({
-          id: authData.user.id,
-          username: String(meta["username"] || trimmedId),
-          email: authData.user.email || emailToTry,
-          name: String(meta["name"] || trimmedId),
-          department: String(meta["department"] || "복리후생/총무"),
-          role: (meta["role"] as UserRole) || "팀원",
-          is_active: true,
-          created_by: "supabase",
-          created_at: authData.user.created_at?.slice(0, 10) || "2026-11-04",
-        });
+        const profile = await fetchProfile(authData.user.id);
+        if (!profile) {
+          await supabase.auth.signOut();
+          return setErr("등록되지 않은 계정입니다. 관리자에게 문의하세요.");
+        }
+        if (!profile.is_active) {
+          await supabase.auth.signOut();
+          return setErr("비활성화된 계정입니다. 관리자에게 문의하세요.");
+        }
+        return onLoginSuccess(profile);
       }
 
       setErr("아이디 또는 비밀번호가 올바르지 않습니다.");
@@ -1456,8 +1371,7 @@ export function Login({
               <b>관리자가 [사용자 수동 등록] 메뉴에서 직접 계정을 발급</b>합니다.
             </p>
             <p className="pt-1 text-center font-medium text-foreground">
-              테스트 관리자 계정: <code className="rounded bg-background px-1.5 py-0.5">admin</code> /{" "}
-              <code className="rounded bg-background px-1.5 py-0.5">1234</code>
+              관리자 아이디: <code className="rounded bg-background px-1.5 py-0.5">admin</code>
             </p>
           </div>
         </form>
@@ -2976,7 +2890,7 @@ function AdminUserManagementView({
 }) {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("1234");
+  const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [department, setDepartment] = useState<string>("복리후생/총무");
   const [role, setRole] = useState<UserRole>("팀원");
@@ -2988,10 +2902,13 @@ function AdminUserManagementView({
     const cleanId = username.trim();
     const cleanName = name.trim();
     const cleanEmail = email.trim() || (cleanId ? `${cleanId}@zenith.kr` : "");
-    const cleanPw = password.trim() || "1234";
+    const cleanPw = password.trim();
 
     if (!cleanId || !cleanName) {
       return notify("아이디와 성명을 입력해주세요.");
+    }
+    if (cleanPw.length < 8) {
+      return notify("초기 비밀번호는 8자 이상이어야 합니다.");
     }
     if (
       users.some(
@@ -3004,63 +2921,52 @@ function AdminUserManagementView({
     }
 
     setSubmitting(true);
-
-    const newUser: AppUser = {
-      id: `usr-${uid()}`,
-      username: cleanId,
-      email: cleanEmail,
-      password: cleanPw,
-      name: cleanName,
-      department,
-      role,
-      is_active: true,
-      created_by: currentUser.username,
-      created_at: "2026-11-04",
-      supabase_synced: dbTableReady,
-    };
-
-    setUsers((prev) => [...prev, newUser]);
-    onActivity(
-      "신규 사용자 수동 등록 완료",
-      `${cleanName} (${cleanId} · ${department} · ${role}) 계정이 발급되었습니다.`,
-    );
-    setUsername("");
-    setEmail("");
-    setPassword("1234");
-    setName("");
-    setSubmitting(false);
-    notify(`'${cleanName}' (${cleanId}) 계정이 수동 등록되었습니다.`);
-
-    // Sync with Supabase Auth and public.app_users in background
-    void (async () => {
-      try {
-        const authPassword = cleanPw.length >= 6 ? cleanPw : `${cleanPw}00`;
+    try {
+      // 1. Supabase Auth 계정 생성 (비밀번호는 Auth 에만 저장)
+      const { data: signUpData, error: signUpErr } =
         await supabaseAdminRegistrar.auth.signUp({
           email: cleanEmail,
-          password: authPassword,
+          password: cleanPw,
           options: {
-            data: {
-              username: cleanId,
-              name: cleanName,
-              department,
-              role,
-            },
+            data: { username: cleanId, name: cleanName, department, role },
           },
         });
-        await supabase.from("app_users").insert({
+      if (signUpErr || !signUpData.user) {
+        return notify(`계정 생성 실패: ${signUpErr?.message ?? "알 수 없는 오류"}`);
+      }
+
+      // 2. app_users 프로필/권한 등록 (RLS: 관리자만 가능)
+      const { data: inserted, error: insertErr } = await supabase
+        .from("app_users")
+        .insert({
+          auth_user_id: signUpData.user.id,
           username: cleanId,
           email: cleanEmail,
-          password_hash: cleanPw,
           name: cleanName,
           department,
           role,
           is_active: true,
           created_by: currentUser.username,
-        });
-      } catch {
-        // ignore if remote table not yet migrated
+        })
+        .select()
+        .single();
+      if (insertErr || !inserted) {
+        return notify(`사용자 등록 실패: ${insertErr?.message ?? "알 수 없는 오류"}`);
       }
-    })();
+
+      setUsers((prev) => [...prev, mapAppUserRow(inserted)]);
+      onActivity(
+        "신규 사용자 수동 등록 완료",
+        `${cleanName} (${cleanId} · ${department} · ${role}) 계정이 발급되었습니다.`,
+      );
+      setUsername("");
+      setEmail("");
+      setPassword("");
+      setName("");
+      notify(`'${cleanName}' (${cleanId}) 계정이 수동 등록되었습니다.`);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const copySql = async () => {
@@ -3174,7 +3080,7 @@ function AdminUserManagementView({
                 <input
                   type="text"
                   className={inputCls}
-                  placeholder="1234"
+                  placeholder="8자 이상"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
@@ -3242,7 +3148,7 @@ function AdminUserManagementView({
                     사용자
                   </th>
                   <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
-                    아이디 / 초기 비밀번호
+                    아이디
                   </th>
                   <th className="pb-3 text-start text-xs font-medium text-muted-foreground">
                     담당 분야
@@ -3283,11 +3189,6 @@ function AdminUserManagementView({
                     <td className="py-3.5 pr-3">
                       <div className="flex items-center gap-1.5 font-mono text-xs">
                         <span className="font-semibold text-foreground">{u.username}</span>
-                        <span className="text-muted-foreground">/</span>
-                        <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                          <KeyRound className="h-2.5 w-2.5" />
-                          {u.password || "1234"}
-                        </span>
                       </div>
                     </td>
                     <td className="py-3.5 pr-3">
