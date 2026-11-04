@@ -75,6 +75,16 @@ import {
 } from "recharts";
 import { cn } from "@/lib/utils";
 import {
+  addMonths,
+  changedInWeek,
+  monthOf,
+  monthTimeline,
+  stateAsOf,
+  weekOrdinalLabel,
+  weeksOfMonth,
+  type WeeklyState,
+} from "@/lib/history";
+import {
   STATUSES,
   analysisToTasks,
   analyzeDrafts,
@@ -3138,6 +3148,121 @@ function WeekComparisonPanel({
 /* ============================================================================
  * 3. KANBAN BOARD VIEW
  * ============================================================================ */
+type BoardCard = Task & {
+  badge?: { label: string; cls: string } | undefined;
+  trail?: (string | null)[] | undefined;
+};
+
+const TRAIL_DOT: Record<string, string> = {
+  대기: "bg-warning",
+  "진행 중": "bg-primary",
+  "지연 / 이슈": "bg-destructive",
+  완료: "bg-success",
+};
+
+function TaskCard({
+  card,
+  editable,
+  trailWeeks,
+  onDelete,
+}: {
+  card: BoardCard;
+  editable: boolean;
+  trailWeeks?: string[] | undefined;
+  onDelete?: () => void;
+}) {
+  return (
+    <div
+      draggable={editable}
+      onDragStart={editable ? (e) => e.dataTransfer.setData("text/plain", card.id) : undefined}
+      className={cn(
+        "group rounded-xl border border-border bg-card p-3.5 shadow-2xs transition-all duration-200 hover:border-primary/30 hover:shadow-md",
+        editable && "cursor-grab active:cursor-grabbing",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span
+          className={cn(
+            "rounded-md border px-2 py-0.5 text-[11px] font-medium",
+            fieldColor[card.field] ?? "bg-primary/10 text-primary",
+          )}
+        >
+          {card.field || "미분류"}
+        </span>
+        {card.badge && (
+          <span
+            className={cn(
+              "ml-auto rounded-md border px-1.5 py-0.5 text-[10px] font-semibold",
+              card.badge.cls,
+            )}
+          >
+            {card.badge.label}
+          </span>
+        )}
+        {editable && onDelete && (
+          <button
+            onClick={onDelete}
+            aria-label="업무 삭제"
+            className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      <p className="mt-2.5 text-sm font-bold leading-snug">{card.title}</p>
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        👤 {card.owner} · 📅 {card.due || "기한 미정"}
+        {isOverdue(card) && (
+          <span className="ml-1 font-semibold text-destructive">· 마감 초과</span>
+        )}
+      </p>
+      {card.progress && (
+        <p className="mt-2 rounded-md bg-muted/60 px-2 py-1 text-xs text-foreground/90">
+          {card.progress}
+        </p>
+      )}
+      {card.issue && (
+        <span className="mt-2 inline-block rounded-md border border-destructive/20 bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
+          ⚠ {card.issue}
+        </span>
+      )}
+      {card.trail && trailWeeks && (
+        <div className="mt-2.5 flex items-center gap-1 border-t border-border/60 pt-2">
+          {card.trail.map((st, i) => (
+            <span
+              key={trailWeeks[i]}
+              title={`${weekOrdinalLabel(trailWeeks[i]!)}: ${st ?? "없음"}`}
+              className="flex flex-1 flex-col items-center gap-0.5"
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-full rounded-full",
+                  st ? (TRAIL_DOT[st] ?? "bg-muted") : "bg-muted",
+                )}
+              />
+              <span className="text-[9px] text-muted-foreground">
+                {weekOrdinalLabel(trailWeeks[i]!).split(" ")[1]}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const historyToTask = (s: WeeklyState): Task => ({
+  id: s.task_id,
+  code: s.code,
+  field: s.field,
+  title: s.title,
+  owner: s.owner,
+  due: s.due,
+  status: ((STATUSES as readonly string[]).includes(s.status) ? s.status : "대기") as Status,
+  progress: s.progress,
+  issue: s.issue,
+});
+
 function KanbanView({
   tasks,
   setTasks,
@@ -3151,11 +3276,35 @@ function KanbanView({
   onOpenNewTask: () => void;
   onSyncTask: (t: Task) => Promise<void>;
 }) {
+  const thisWeek = weekStartOf();
   const [over, setOver] = useState<Status | null>(null);
   const [selectedField, setSelectedField] = useState<string>("전체");
   const [searchQuery, setSearchQuery] = useState("");
+  const [mode, setMode] = useState<"week" | "month">("week");
+  const [week, setWeek] = useState(thisWeek);
+  const [month, setMonth] = useState(() => monthOf());
+  const [history, setHistory] = useState<WeeklyState[] | null>(null);
+
+  const isLive = mode === "week" && week === thisWeek;
+
+  // 주차별 상태 기록 (보드 재구성 · 주차별 변경 건수). 편집 후 다른 주를 보면 다시 불러옴
+  useEffect(() => {
+    let alive = true;
+    supabase
+      .from("task_weekly_states")
+      .select("*")
+      .lte("week_start", thisWeek)
+      .then(({ data, error }) => {
+        if (alive) setHistory(error || !Array.isArray(data) ? [] : (data as WeeklyState[]));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [mode, week, month, thisWeek]);
 
   const onDrop = async (e: DragEvent, s: Status) => {
+    setOver(null);
+    if (!isLive) return;
     const id = e.dataTransfer.getData("text/plain");
     let changed: Task | undefined;
     setTasks((p) =>
@@ -3167,16 +3316,101 @@ function KanbanView({
         return t;
       }),
     );
-    setOver(null);
     notify(`상태가 '${s}'(으)로 변경되었습니다.`);
     if (changed) await onSyncTask(changed);
   };
 
-  const filteredTasks = useMemo(() => {
-    return tasks.filter((t) => {
+  const deleteTask = async (t: Task) => {
+    setTasks((prev) => prev.filter((item) => item.id !== t.id));
+    notify("업무가 삭제되었습니다.");
+    try {
+      await supabase.from("tasks").delete().eq("id", t.id);
+    } catch {
+      // ignore
+    }
+  };
+
+  const monthWeeks = useMemo(() => weeksOfMonth(month), [month]);
+  const stripWeeks = useMemo(() => weeksOfMonth(monthOf(new Date(`${week}T00:00:00`))), [week]);
+  const rows = history ?? [];
+
+  const { cards, summary } = useMemo((): {
+    cards: BoardCard[];
+    summary: { label: string; cls: string }[];
+  } => {
+    if (isLive) {
+      const changed = changedInWeek(rows, thisWeek);
+      return {
+        cards: tasks.map((t) => ({
+          ...t,
+          badge: changed.has(t.id)
+            ? { label: "이번 주 갱신", cls: "border-success/30 bg-success/10 text-success" }
+            : undefined,
+        })),
+        summary: [],
+      };
+    }
+    if (mode === "week") {
+      const changed = changedInWeek(rows, week);
+      const list = stateAsOf(rows, week).map((s) => ({
+        ...historyToTask(s),
+        badge: changed.has(s.task_id)
+          ? { label: "이 주 갱신", cls: "border-success/30 bg-success/10 text-success" }
+          : { label: "변경 없음", cls: "border-border bg-muted text-muted-foreground" },
+      }));
+      return {
+        cards: list,
+        summary: [
+          {
+            label: `업무 ${list.length}건`,
+            cls: "border-foreground bg-foreground text-background",
+          },
+          {
+            label: `이 주 갱신 ${changed.size}건`,
+            cls: "border-success/30 bg-success/10 text-success",
+          },
+          {
+            label: `변경 없음 ${list.length - list.filter((c) => changed.has(c.id)).length}건`,
+            cls: "border-border bg-muted text-muted-foreground",
+          },
+        ],
+      };
+    }
+    const until = monthWeeks.filter((w) => w <= thisWeek);
+    const items = monthTimeline(rows, monthWeeks, until[until.length - 1] ?? monthWeeks[0]);
+    return {
+      cards: items.map((it) => ({
+        ...historyToTask(it.state),
+        trail: it.trail,
+        badge: it.createdThisMonth
+          ? { label: "이달 신규", cls: "border-primary/25 bg-primary/10 text-primary" }
+          : undefined,
+      })),
+      summary: [
+        { label: `업무 ${items.length}건`, cls: "border-foreground bg-foreground text-background" },
+        {
+          label: `이달 신규 ${items.filter((i) => i.createdThisMonth).length}건`,
+          cls: "border-primary/25 bg-primary/10 text-primary",
+        },
+        {
+          label: `이달 완료 ${items.filter((i) => i.completedThisMonth).length}건`,
+          cls: "border-success/30 bg-success/10 text-success",
+        },
+        {
+          label: `지연 발생 ${items.filter((i) => i.delayedThisMonth).length}건`,
+          cls: "border-destructive/30 bg-destructive/10 text-destructive",
+        },
+      ],
+    };
+  }, [isLive, mode, week, rows, tasks, monthWeeks, thisWeek]);
+
+  const trailWeeks = useMemo(() => monthWeeks.filter((w) => w <= thisWeek), [monthWeeks, thisWeek]);
+
+  const filteredCards = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return cards.filter((t) => {
       const matchesField =
         selectedField === "전체" || (t.field.trim() || "미분류") === selectedField;
-      const q = searchQuery.trim().toLowerCase();
       const matchesSearch =
         !q ||
         t.title.toLowerCase().includes(q) ||
@@ -3184,25 +3418,143 @@ function KanbanView({
         t.progress.toLowerCase().includes(q);
       return matchesField && matchesSearch;
     });
-  }, [tasks, selectedField, searchQuery]);
+  }, [cards, selectedField, searchQuery]);
+
+  const changesIn = (w: string) => changedInWeek(rows, w).size;
+  const [mYear, mMonth] = month.split("-");
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">2. 진행상태 (칸반 보드)</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            카드를 끌어서 상태를 변경하세요.
+            {isLive
+              ? "이번 주 보드입니다. 카드를 끌어서 상태를 변경하세요."
+              : mode === "week"
+                ? `${weekLabel(week)} 주 말 기준 상태입니다 (읽기 전용).`
+                : `${mYear}년 ${Number(mMonth)}월 통합 보드 — 카드 아래 막대가 주차별 상태 흐름입니다 (읽기 전용).`}
           </p>
         </div>
-        <button className={btnPrimary} onClick={onOpenNewTask}>
-          + 새 업무 등록
-        </button>
+        {isLive && (
+          <button className={btnPrimary} onClick={onOpenNewTask}>
+            + 새 업무 등록
+          </button>
+        )}
       </div>
+
+      {/* 기간 선택: 주간 / 월간 */}
+      <ZenithCard className="space-y-3 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="inline-flex rounded-lg border border-input bg-background p-0.5">
+            {(
+              [
+                ["week", "주간"],
+                ["month", "월간"],
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer",
+                  mode === m
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-accent",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {mode === "week" ? (
+            <WeekPicker week={week} onChange={setWeek} />
+          ) : (
+            <div className="inline-flex items-center gap-1 rounded-lg border border-input bg-background p-0.5">
+              <button
+                onClick={() => setMonth(addMonths(month, -1))}
+                aria-label="이전 달"
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent cursor-pointer"
+              >
+                <ChevronsLeft className="h-4 w-4" />
+              </button>
+              <span className="min-w-28 px-1 text-center text-xs font-semibold">
+                {mYear}년 {Number(mMonth)}월
+              </span>
+              <button
+                onClick={() => setMonth(addMonths(month, 1))}
+                disabled={month >= monthOf()}
+                aria-label="다음 달"
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-30 cursor-pointer"
+              >
+                <ChevronsRight className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {!isLive && (
+            <button
+              onClick={() => {
+                setMode("week");
+                setWeek(thisWeek);
+              }}
+              className="text-xs font-semibold text-primary hover:underline cursor-pointer"
+            >
+              이번 주로 돌아가기
+            </button>
+          )}
+
+          {summary.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 lg:ml-auto">
+              {summary.map((s) => (
+                <span
+                  key={s.label}
+                  className={cn(
+                    "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold",
+                    s.cls,
+                  )}
+                >
+                  {s.label}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 주차 달력 줄 — 선택한 주가 속한 달의 주들, 주마다 갱신 건수 */}
+        {mode === "week" && (
+          <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
+            {stripWeeks.map((w) => {
+              const future = w > thisWeek;
+              const n = changesIn(w);
+              return (
+                <button
+                  key={w}
+                  disabled={future}
+                  onClick={() => setWeek(w)}
+                  className={cn(
+                    "rounded-lg border px-2 py-1.5 text-start transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40",
+                    w === week ? "border-primary bg-primary/10" : "border-border hover:bg-accent",
+                  )}
+                >
+                  <span className="block text-xs font-semibold">
+                    {weekOrdinalLabel(w)}
+                    {w === thisWeek && <span className="ml-1 text-primary">· 이번 주</span>}
+                  </span>
+                  <span className="block text-[10px] text-muted-foreground">
+                    {weekLabel(w).slice(5)} · {future ? "-" : `갱신 ${n}건`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </ZenithCard>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-1.5">
-          {["전체", ...fieldsOf(tasks, FIELDS)].map((fd) => (
+          {["전체", ...fieldsOf(cards, FIELDS)].map((fd) => (
             <button
               key={fd}
               onClick={() => setSelectedField(fd)}
@@ -3228,100 +3580,68 @@ function KanbanView({
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {STATUSES.map((s) => {
-          const list = filteredTasks.filter((t) => t.status === s);
-          return (
-            <div
-              key={s}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setOver(s);
-              }}
-              onDragLeave={() => setOver(null)}
-              onDrop={(e) => onDrop(e, s)}
-              className={cn(
-                "min-h-[440px] rounded-xl border-2 p-3.5 transition-colors",
-                over === s
-                  ? "border-primary bg-primary/5"
-                  : "border-border/60 bg-muted/40",
-              )}
-            >
-              <div className="mb-3.5 flex items-center justify-between px-1">
-                <span
-                  className={cn(
-                    "rounded-full border px-2.5 py-0.5 text-xs font-semibold",
-                    statusBadgeStyle[s],
-                  )}
-                >
-                  {s}
-                </span>
-                <span className="rounded-full bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground shadow-2xs">
-                  {list.length}건
-                </span>
-              </div>
-
-              <div className="space-y-2.5">
-                {list.map((t) => (
-                  <div
-                    key={t.id}
-                    draggable
-                    onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
-                    className="group cursor-grab rounded-xl border border-border bg-card p-3.5 shadow-2xs transition-all duration-200 hover:border-primary/30 hover:shadow-md active:cursor-grabbing"
+      {!isLive && history === null ? (
+        <ZenithCard className="p-10 text-center text-sm text-muted-foreground">
+          기록을 불러오는 중...
+        </ZenithCard>
+      ) : !isLive && cards.length === 0 ? (
+        <ZenithCard className="p-10 text-center text-sm text-muted-foreground">
+          이 기간의 기록이 없습니다. 주차별 상태는 기록 기능이 켜진 주부터 쌓입니다.
+        </ZenithCard>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {STATUSES.map((s) => {
+            const list = filteredCards.filter((t) => t.status === s);
+            return (
+              <div
+                key={s}
+                onDragOver={
+                  isLive
+                    ? (e) => {
+                        e.preventDefault();
+                        setOver(s);
+                      }
+                    : undefined
+                }
+                onDragLeave={() => setOver(null)}
+                onDrop={(e) => onDrop(e, s)}
+                className={cn(
+                  "min-h-[440px] rounded-xl border-2 p-3.5 transition-colors",
+                  over === s ? "border-primary bg-primary/5" : "border-border/60 bg-muted/40",
+                )}
+              >
+                <div className="mb-3.5 flex items-center justify-between px-1">
+                  <span
+                    className={cn(
+                      "rounded-full border px-2.5 py-0.5 text-xs font-semibold",
+                      statusBadgeStyle[s],
+                    )}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span
-                        className={cn(
-                          "rounded-md border px-2 py-0.5 text-[11px] font-medium",
-                          fieldColor[t.field] ?? "bg-primary/10 text-primary",
-                        )}
-                      >
-                        {t.field}
-                      </span>
-                      <button
-                        onClick={async () => {
-                          setTasks((prev) => prev.filter((item) => item.id !== t.id));
-                          notify("업무가 삭제되었습니다.");
-                          try {
-                            await supabase.from("tasks").delete().eq("id", t.id);
-                          } catch {
-                            // ignore
-                          }
-                        }}
-                        aria-label="업무 삭제"
-                        className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    <p className="mt-2.5 text-sm font-bold leading-snug">{t.title}</p>
-                    <p className="mt-1.5 text-xs text-muted-foreground">
-                      👤 {t.owner} · 📅 {t.due || "기한 미정"}
-                      {isOverdue(t) && (
-                        <span className="ml-1 font-semibold text-destructive">· 마감 초과</span>
-                      )}
-                    </p>
-                    {t.progress && (
-                      <p className="mt-2 rounded-md bg-muted/60 px-2 py-1 text-xs text-foreground/90">
-                        {t.progress}
-                      </p>
-                    )}
-                    {t.issue && (
-                      <span className="mt-2 inline-block rounded-md border border-destructive/20 bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
-                        ⚠ {t.issue}
-                      </span>
-                    )}
-                  </div>
-                ))}
+                    {s}
+                  </span>
+                  <span className="rounded-full bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground shadow-2xs">
+                    {list.length}건
+                  </span>
+                </div>
+                <div className="space-y-2.5">
+                  {list.map((card) => (
+                    <TaskCard
+                      key={card.id}
+                      card={card}
+                      editable={isLive}
+                      trailWeeks={mode === "month" ? trailWeeks : undefined}
+                      onDelete={() => void deleteTask(card)}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
-
 /* ============================================================================
  * 4. WEEKLY REPORT VIEW (주간업무보고서)
  * ============================================================================ */
