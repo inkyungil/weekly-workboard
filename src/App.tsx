@@ -1,19 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
 import { useState, type DragEvent, type ReactNode } from "react";
-
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "업무관리 시스템 | 주간업무보고 · 칸반" },
-      { name: "description", content: "주간업무보고 자동 생성 및 칸반 보드 관리 시스템" },
-      { property: "og:title", content: "업무관리 시스템" },
-      { property: "og:description", content: "주간업무보고 자동 생성 및 칸반 보드 관리 시스템" },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
-  }),
-  component: Index,
-});
 
 const FIELDS = ["복리후생/총무", "사회공헌/의전", "자산", "비상계획"] as const;
 const STATUSES = ["대기", "진행 중", "지연 / 이슈", "완료"] as const;
@@ -69,7 +54,7 @@ function parsePaste(text: string): Task[] {
     }));
 }
 
-function Index() {
+export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [tasks, setTasks] = useState<Task[]>(SAMPLE);
   const [tab, setTab] = useState(0);
