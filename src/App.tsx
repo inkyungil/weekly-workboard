@@ -52,6 +52,12 @@ import {
   ArrowUp,
   ArrowDown,
   Check,
+  ClipboardCheck,
+  History,
+  Download,
+  ChevronsLeft,
+  ChevronsRight,
+  RefreshCw,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -68,6 +74,21 @@ import {
   Cell,
 } from "recharts";
 import { cn } from "@/lib/utils";
+import {
+  addWeeks,
+  buildSubmissionStatus,
+  DIST_COLUMNS,
+  FIELD_LABELS,
+  mergeDistRows,
+  parseDistSheet,
+  reminderText,
+  tasksForDepartment,
+  toDistRows,
+  weekLabel,
+  weekStartOf,
+  type MergeField,
+  type MergeResult,
+} from "@/lib/weekly";
 import {
   supabase,
   supabaseAdminRegistrar,
@@ -100,6 +121,7 @@ export type Task = {
   status: Status;
   progress: string;
   issue: string;
+  updated_at?: string;
 };
 
 type ActivityItem = {
@@ -111,7 +133,17 @@ type ActivityItem = {
   read: boolean;
 };
 
-type ViewId = "dashboard" | "upload" | "kanban" | "report" | "members" | "org" | "positions";
+type ViewId =
+  | "dashboard"
+  | "upload"
+  | "kanban"
+  | "report"
+  | "status"
+  | "distribute"
+  | "audit"
+  | "members"
+  | "org"
+  | "positions";
 
 // 화면별 URL
 const VIEW_PATHS: Record<ViewId, string> = {
@@ -119,6 +151,9 @@ const VIEW_PATHS: Record<ViewId, string> = {
   upload: "/upload",
   kanban: "/kanban",
   report: "/report",
+  status: "/status",
+  distribute: "/distribute",
+  audit: "/audit",
   members: "/accounts/members",
   org: "/accounts/org",
   positions: "/accounts/positions",
@@ -128,12 +163,15 @@ const VIEW_TITLES: Record<ViewId, string> = {
   upload: "자료 올리기",
   kanban: "진행상태",
   report: "주간업무보고서",
+  status: "제출 현황",
+  distribute: "배포 · 취합",
+  audit: "변경 이력",
   members: "회원 관리",
   org: "조직도 관리",
   positions: "직급 관리",
 };
-// 계정관리 화면 (관리자 전용)
-const ACCOUNT_VIEWS: ViewId[] = ["members", "org", "positions"];
+// 관리자 전용 화면
+const ACCOUNT_VIEWS: ViewId[] = ["distribute", "audit", "members", "org", "positions"];
 // 예전 주소 호환
 const LEGACY_PATHS: Record<string, ViewId> = { "/users": "members", "/accounts": "members" };
 
@@ -677,6 +715,24 @@ function Workboard() {
         },
       ],
     },
+    {
+      key: "operations",
+      label: "운영",
+      items: [
+        { id: "status" as ViewId, label: "제출 현황", icon: ClipboardCheck, badge: undefined },
+        ...(currentUser.role === "관리자"
+          ? [
+              {
+                id: "distribute" as ViewId,
+                label: "배포 · 취합",
+                icon: FileSpreadsheet,
+                badge: undefined,
+              },
+              { id: "audit" as ViewId, label: "변경 이력", icon: History, badge: undefined },
+            ]
+          : []),
+      ],
+    },
     ...(currentUser.role === "관리자"
       ? [
           {
@@ -1201,8 +1257,11 @@ function Workboard() {
                   { id: "upload" as ViewId, label: "1. 자료 올리기", icon: UploadIcon },
                   { id: "kanban" as ViewId, label: "2. 진행상태 (칸반 보드)", icon: KanbanIcon },
                   { id: "report" as ViewId, label: "3. 주간업무보고서", icon: FileText },
+                  { id: "status" as ViewId, label: "제출 현황", icon: ClipboardCheck },
                   ...(currentUser.role === "관리자"
                     ? [
+                        { id: "distribute" as ViewId, label: "배포 · 취합", icon: FileSpreadsheet },
+                        { id: "audit" as ViewId, label: "변경 이력", icon: History },
                         { id: "members" as ViewId, label: "회원 관리", icon: Users },
                         { id: "org" as ViewId, label: "조직도 관리", icon: Network },
                         { id: "positions" as ViewId, label: "직급 관리", icon: Award },
@@ -1282,7 +1341,38 @@ function Workboard() {
                 onSyncTask={syncTaskToSupabase}
               />
             )}
-            {activeView === "report" && <ReportView tasks={tasks} notify={notify} />}
+            {activeView === "report" && (
+              <ReportView tasks={tasks} currentUser={currentUser} notify={notify} />
+            )}
+            {activeView === "status" && (
+              <SubmissionStatusView
+                users={users}
+                departments={departments}
+                currentUser={currentUser}
+                notify={notify}
+              />
+            )}
+            {activeView === "distribute" && (
+              <DistributionView
+                users={users}
+                departments={departments}
+                notify={notify}
+                onApplied={(merged) => {
+                  setTasks((prev) => {
+                    const byId = new Map(merged.map((t) => [t.id, t]));
+                    const kept = prev.map((t) => byId.get(t.id) ?? t);
+                    const added = merged.filter((t) => !prev.some((p) => p.id === t.id));
+                    return [...added, ...kept];
+                  });
+                  addActivity({
+                    type: "upload",
+                    title: "배포 파일 취합 반영",
+                    description: `${merged.length}건의 업무가 취합 파일로 갱신되었습니다.`,
+                  });
+                }}
+              />
+            )}
+            {activeView === "audit" && <AuditLogView notify={notify} />}
             {activeView === "members" && (
               <AdminUserManagementView
                 users={users}
@@ -2868,14 +2958,24 @@ function KanbanView({
 /* ============================================================================
  * 4. WEEKLY REPORT VIEW (주간업무보고서)
  * ============================================================================ */
-function ReportView({ tasks, notify }: { tasks: Task[]; notify: (m: string) => void }) {
+function ReportContent({
+  tasks,
+  notify,
+  title = "주간업무보고서",
+  headerExtra,
+}: {
+  tasks: Task[];
+  notify: (m: string) => void;
+  title?: string;
+  headerExtra?: ReactNode;
+}) {
   const cnt = (s: Status) => tasks.filter((t) => t.status === s).length;
   const delayed = tasks.filter((t) => t.status === "지연 / 이슈");
   const done = (l: Task[]) => l.filter((t) => t.status === "완료" || t.status === "진행 중");
   const next = (l: Task[]) => l.filter((t) => t.status !== "완료");
 
   const copy = async () => {
-    let s = `주간업무보고서\n\nⅠ. 전체 요약\n총 ${tasks.length}건 (완료 ${cnt("완료")} / 진행 중 ${cnt("진행 중")} / 대기 ${cnt("대기")} / 지연 ${cnt("지연 / 이슈")})\n\nⅡ. 분야별 실적\n`;
+    let s = `${title}\n\nⅠ. 전체 요약\n총 ${tasks.length}건 (완료 ${cnt("완료")} / 진행 중 ${cnt("진행 중")} / 대기 ${cnt("대기")} / 지연 ${cnt("지연 / 이슈")})\n\nⅡ. 분야별 실적\n`;
     FIELDS.forEach((fd) => {
       const l = tasks.filter((t) => t.field === fd);
       s += `\n[${fd}]\n 금주 실적:\n${
@@ -2904,15 +3004,18 @@ function ReportView({ tasks, notify }: { tasks: Task[]; notify: (m: string) => v
     <ZenithCard className="space-y-8 p-6 sm:p-8">
       <div className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">주간업무보고서</h2>
+          <h2 className="text-2xl font-bold tracking-tight">{title}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             등록된 업무 데이터를 기반으로 자동 생성된 부서 주간업무보고서입니다.
           </p>
         </div>
-        <button className={btnPrimary} onClick={copy}>
-          <Copy className="h-4 w-4" />
-          <span>📋 보고서 텍스트 복사</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {headerExtra}
+          <button className={btnPrimary} onClick={copy}>
+            <Copy className="h-4 w-4" />
+            <span>📋 보고서 텍스트 복사</span>
+          </button>
+        </div>
       </div>
 
       <section>
@@ -3201,14 +3304,13 @@ function AdminUserManagementView({
     setSubmitting(true);
     try {
       // 1. Supabase Auth 계정 생성 (비밀번호는 Auth 에만 저장)
-      const { data: signUpData, error: signUpErr } =
-        await supabaseAdminRegistrar.auth.signUp({
-          email: cleanEmail,
-          password: cleanPw,
-          options: {
-            data: { username: cleanId, name: cleanName, department: deptName, role },
-          },
-        });
+      const { data: signUpData, error: signUpErr } = await supabaseAdminRegistrar.auth.signUp({
+        email: cleanEmail,
+        password: cleanPw,
+        options: {
+          data: { username: cleanId, name: cleanName, department: deptName, role },
+        },
+      });
       if (signUpErr || !signUpData.user) {
         return notify(`계정 생성 실패: ${signUpErr?.message ?? "알 수 없는 오류"}`);
       }
@@ -3389,9 +3491,7 @@ function AdminUserManagementView({
         <ZenithCard className="col-span-full xl:col-span-8 p-6">
           <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-base font-semibold">
-                회원 목록 ({visibleUsers.length}명)
-              </h2>
+              <h2 className="text-base font-semibold">회원 목록 ({visibleUsers.length}명)</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 직급 순으로 정렬되며, 표에서 바로 소속·직급·권한을 변경할 수 있습니다.
               </p>
@@ -3461,7 +3561,9 @@ function AdminUserManagementView({
                           );
                         }}
                       >
-                        <option value="">{u.department_id ? "소속 없음" : u.department || "소속 없음"}</option>
+                        <option value="">
+                          {u.department_id ? "소속 없음" : u.department || "소속 없음"}
+                        </option>
                         <DepartmentOptions departments={departments} />
                       </select>
                     </td>
@@ -3590,7 +3692,8 @@ function OrgChartView({
       return notify("같은 상위 조직에 이미 있는 조직명입니다.");
     }
     const sortOrder =
-      Math.max(0, ...departments.filter((d) => d.parent_id === parent).map((d) => d.sort_order)) + 1;
+      Math.max(0, ...departments.filter((d) => d.parent_id === parent).map((d) => d.sort_order)) +
+      1;
 
     setSaving(true);
     try {
@@ -3628,7 +3731,9 @@ function OrgChartView({
       "회원 부서명 갱신 실패",
     );
     setDepartments((prev) => prev.map((x) => (x.id === d.id ? { ...x, name: next } : x)));
-    setUsers((prev) => prev.map((u) => (u.department_id === d.id ? { ...u, department: next } : u)));
+    setUsers((prev) =>
+      prev.map((u) => (u.department_id === d.id ? { ...u, department: next } : u)),
+    );
     notify(`'${d.name}' → '${next}' 이름이 변경되었습니다.`);
   };
 
@@ -3637,7 +3742,10 @@ function OrgChartView({
       return notify("이동할 상위 조직에 같은 이름의 조직이 있습니다.");
     }
     const sortOrder =
-      Math.max(0, ...departments.filter((x) => x.parent_id === nextParent).map((x) => x.sort_order)) + 1;
+      Math.max(
+        0,
+        ...departments.filter((x) => x.parent_id === nextParent).map((x) => x.sort_order),
+      ) + 1;
     const ok = await runDb(
       supabase
         .from("departments")
@@ -3721,7 +3829,9 @@ function OrgChartView({
             </div>
             <div>
               <h2 className="text-base font-semibold">조직 추가</h2>
-              <p className="text-xs text-muted-foreground">상위 조직을 비우면 최상위 조직이 됩니다</p>
+              <p className="text-xs text-muted-foreground">
+                상위 조직을 비우면 최상위 조직이 됩니다
+              </p>
             </div>
           </div>
           <form onSubmit={addDepartment} className="mt-5 space-y-4">
@@ -4073,6 +4183,771 @@ function PositionsView({
 }
 
 /* ============================================================================
+ * 6-1. 운영 · 주차 선택 / 주간 보고 확정 / 제출 현황 / 배포·취합 / 변경 이력
+ * ============================================================================ */
+
+// DB 의 최신 업무 목록 (제출 현황 · 취합은 화면 상태가 아니라 DB 기준으로 판단)
+async function fetchTasks(): Promise<Task[] | null> {
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .order("created_at", { ascending: false });
+  return error || !Array.isArray(data) ? null : (data as Task[]);
+}
+
+function WeekPicker({ week, onChange }: { week: string; onChange: (w: string) => void }) {
+  const thisWeek = weekStartOf();
+  return (
+    <div className="inline-flex items-center gap-1 rounded-lg border border-input bg-background p-0.5">
+      <button
+        onClick={() => onChange(addWeeks(week, -1))}
+        aria-label="이전 주"
+        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent cursor-pointer"
+      >
+        <ChevronsLeft className="h-4 w-4" />
+      </button>
+      <span className="min-w-36 px-1 text-center text-xs font-semibold">
+        {weekLabel(week)}
+        {week === thisWeek && <span className="ml-1 text-primary">(이번 주)</span>}
+      </span>
+      <button
+        onClick={() => onChange(addWeeks(week, 1))}
+        disabled={week >= thisWeek}
+        aria-label="다음 주"
+        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-30 cursor-pointer"
+      >
+        <ChevronsRight className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+type WeeklyReport = {
+  week_start: string;
+  snapshot: Task[];
+  confirmed_by_name: string;
+  confirmed_at: string;
+};
+
+const formatDateTime = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
+};
+
+function ReportView({
+  tasks,
+  currentUser,
+  notify,
+}: {
+  tasks: Task[];
+  currentUser: AppUser;
+  notify: (m: string) => void;
+}) {
+  const [week, setWeek] = useState(() => weekStartOf());
+  const [report, setReport] = useState<WeeklyReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const isAdmin = currentUser.role === "관리자";
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    supabase
+      .from("weekly_reports")
+      .select("week_start, snapshot, confirmed_by_name, confirmed_at")
+      .eq("week_start", week)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!alive) return;
+        setReport((data as WeeklyReport | null) ?? null);
+        setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [week]);
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      const { data, error } = await supabase
+        .from("weekly_reports")
+        .insert({ week_start: week, snapshot: tasks, confirmed_by_name: currentUser.name })
+        .select("week_start, snapshot, confirmed_by_name, confirmed_at")
+        .single();
+      if (error || !data) {
+        return notify(`보고서 확정 실패: ${error?.message ?? "알 수 없는 오류"}`);
+      }
+      setReport(data as WeeklyReport);
+      notify(`${weekLabel(week)} 주간 보고서가 최종 확정되었습니다.`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unconfirm = async () => {
+    setBusy(true);
+    try {
+      const ok = await runDb(
+        supabase.from("weekly_reports").delete().eq("week_start", week),
+        notify,
+        "확정 해제 실패",
+      );
+      if (!ok) return;
+      setReport(null);
+      notify(`${weekLabel(week)} 보고서 확정이 해제되었습니다.`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmed = !!report;
+  const isCurrentWeek = week === weekStartOf();
+  const shown = report?.snapshot ?? (isCurrentWeek ? tasks : []);
+
+  return (
+    <div className="space-y-4">
+      <ZenithCard className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-3">
+          <WeekPicker week={week} onChange={setWeek} />
+          {loading ? (
+            <span className="text-xs text-muted-foreground">확정 여부 확인 중...</span>
+          ) : confirmed ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-0.5 text-xs font-semibold text-success">
+              <Lock className="h-3 w-3" />
+              최종 확정 · {report.confirmed_by_name || "관리자"} ·{" "}
+              {formatDateTime(report.confirmed_at)}
+            </span>
+          ) : (
+            <span className="rounded-full border border-warning/30 bg-warning/10 px-2.5 py-0.5 text-xs font-semibold text-warning-foreground dark:text-warning">
+              작성 중 (미확정)
+            </span>
+          )}
+        </div>
+        {isAdmin && !loading && (
+          <div className="flex items-center gap-2">
+            {confirmed ? (
+              <button onClick={() => void unconfirm()} disabled={busy} className={btnOutline}>
+                <span>확정 해제</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => void confirm()}
+                disabled={busy || !isCurrentWeek}
+                title={
+                  isCurrentWeek ? undefined : "지난 주는 당시 데이터가 없어 확정할 수 없습니다"
+                }
+                className={cn(btnPrimary, (busy || !isCurrentWeek) && "opacity-60")}
+              >
+                <Lock className="h-4 w-4" />
+                <span>최종 확정</span>
+              </button>
+            )}
+          </div>
+        )}
+      </ZenithCard>
+
+      {!loading && !confirmed && !isCurrentWeek ? (
+        <ZenithCard className="p-10 text-center text-sm text-muted-foreground">
+          {weekLabel(week)} 주차는 확정된 보고서가 없습니다. 보고서는 해당 주에 최종 확정해야
+          기록됩니다.
+        </ZenithCard>
+      ) : (
+        <ReportContent
+          tasks={shown}
+          notify={notify}
+          title={`주간업무보고서 (${weekLabel(week)})`}
+          headerExtra={
+            confirmed ? (
+              <span className="text-xs text-muted-foreground">
+                확정본 — 수정되지 않는 보관본입니다
+              </span>
+            ) : undefined
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function SubmissionStatusView({
+  users,
+  departments,
+  currentUser,
+  notify,
+}: {
+  users: AppUser[];
+  departments: Department[];
+  currentUser: AppUser;
+  notify: (m: string) => void;
+}) {
+  const [week, setWeek] = useState(() => weekStartOf());
+  const [dbTasks, setDbTasks] = useState<Task[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const reload = async () => {
+    setLoading(true);
+    const fresh = await fetchTasks();
+    setLoading(false);
+    if (!fresh) return notify("업무 데이터를 불러오지 못했습니다.");
+    setDbTasks(fresh);
+  };
+
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const rows = buildSubmissionStatus(users, dbTasks ?? [], departments, week);
+  const total = rows.reduce((n, r) => n + r.members.length, 0);
+  const submitted = rows.reduce((n, r) => n + r.submittedCount, 0);
+  const overallRate = total ? Math.round((submitted / total) * 100) : 0;
+
+  const copyReminder = async () => {
+    try {
+      await navigator.clipboard.writeText(reminderText(rows, week));
+      notify("독촉 문구가 클립보드에 복사되었습니다.");
+    } catch {
+      notify("복사에 실패했습니다.");
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">제출 현황</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            선택한 주에 본인 담당 업무를 1건 이상 갱신한 회원을 &lsquo;제출&rsquo;로 봅니다. (담당자
+            이름 기준)
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <WeekPicker week={week} onChange={setWeek} />
+          <button onClick={() => void reload()} className={btnOutline} aria-label="새로고침">
+            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+          </button>
+          {currentUser.role === "관리자" && (
+            <button onClick={() => void copyReminder()} className={btnPrimary}>
+              <Copy className="h-4 w-4" />
+              <span>미제출자 독촉 문구 복사</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <ZenithCard className="p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-muted-foreground">전체 입력률</p>
+            <p className="mt-1 text-3xl font-bold">{overallRate}%</p>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            제출 <b className="text-foreground">{submitted}</b> / 대상 {total}명
+          </p>
+        </div>
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full rounded-full bg-primary transition-all"
+            style={{ width: `${overallRate}%` }}
+          />
+        </div>
+      </ZenithCard>
+
+      <ZenithCard className="p-6">
+        <h2 className="pb-4 text-base font-semibold">조직별 입력률</h2>
+        {rows.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">집계할 회원이 없습니다.</p>
+        ) : (
+          <ul className="space-y-3">
+            {rows.map((r) => (
+              <li
+                key={r.department?.id ?? "none"}
+                className="rounded-lg border border-border p-3"
+                style={{ marginLeft: r.depth * 24 }}
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-sm font-semibold">{r.department?.name ?? "소속 없음"}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {r.submittedCount} / {r.members.length}명
+                  </span>
+                  <div className="h-1.5 min-w-24 flex-1 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className={cn(
+                        "h-full rounded-full",
+                        r.rate === 100
+                          ? "bg-success"
+                          : r.rate >= 50
+                            ? "bg-primary"
+                            : "bg-destructive",
+                      )}
+                      style={{ width: `${r.rate}%` }}
+                    />
+                  </div>
+                  <span className="w-10 text-end text-xs font-semibold">
+                    {r.members.length ? `${r.rate}%` : "-"}
+                  </span>
+                </div>
+                {r.members.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {r.members.map((m) => (
+                      <span
+                        key={m.member.id}
+                        title={`담당 업무 ${m.taskCount}건 · 이번 주 갱신 ${m.updatedCount}건`}
+                        className={cn(
+                          "rounded-md border px-2 py-0.5 text-[11px] font-medium",
+                          m.submitted
+                            ? "border-success/30 bg-success/10 text-success"
+                            : "border-destructive/30 bg-destructive/10 text-destructive",
+                        )}
+                      >
+                        {m.member.name} {m.submitted ? "✓" : "미제출"}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </ZenithCard>
+    </div>
+  );
+}
+
+const DIST_STATUSES: readonly string[] = STATUSES;
+
+function DistributionView({
+  users,
+  departments,
+  notify,
+  onApplied,
+}: {
+  users: AppUser[];
+  departments: Department[];
+  notify: (m: string) => void;
+  onApplied: (merged: Task[]) => void;
+}) {
+  const [deptId, setDeptId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<{ fileName: string; result: MergeResult } | null>(null);
+
+  const writeSheet = async (rows: Task[], fileName: string) => {
+    const XLSX = await import("xlsx");
+    const header = DIST_COLUMNS.map((c) => c.header);
+    const body = toDistRows(rows).map((r) => DIST_COLUMNS.map((c) => r[c.key] ?? ""));
+    const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+    ws["!cols"] = DIST_COLUMNS.map((c) => ({
+      wch:
+        c.key === "title" || c.key === "progress" || c.key === "issue"
+          ? 32
+          : c.key === "id"
+            ? 14
+            : 16,
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "업무");
+    XLSX.writeFile(wb, fileName);
+  };
+
+  const distribute = async () => {
+    if (!deptId) return notify("배포할 조직을 선택해주세요.");
+    setBusy(true);
+    try {
+      const fresh = await fetchTasks();
+      if (!fresh) return notify("업무 데이터를 불러오지 못했습니다.");
+      const dept = departments.find((d) => d.id === deptId)!;
+      const rows = tasksForDepartment(fresh, users, departments, deptId);
+      await writeSheet(
+        rows,
+        `주간업무_배포_${dept.name.replace(/[\\/:*?"<>|]/g, "_")}_${weekStartOf()}.xlsx`,
+      );
+      notify(`'${dept.name}' 배포 파일(${rows.length}건)을 내려받았습니다.`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportAll = async () => {
+    setBusy(true);
+    try {
+      const fresh = await fetchTasks();
+      if (!fresh) return notify("업무 데이터를 불러오지 못했습니다.");
+      await writeSheet(fresh, `주간업무_취합본_${weekStartOf()}.xlsx`);
+      notify(`취합본(${fresh.length}건)을 내려받았습니다.`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const readUpload = async (file: File) => {
+    setBusy(true);
+    try {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false });
+      const sheet = wb.Sheets[wb.SheetNames[0]!];
+      if (!sheet) return notify("시트를 찾을 수 없습니다.");
+      const records = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: "",
+        raw: false,
+      });
+      const rows = parseDistSheet(records);
+      if (rows.length === 0 || !(DIST_COLUMNS[0].header in (records[0] ?? {}))) {
+        return notify("배포 파일 형식이 아닙니다. 이 화면에서 내려받은 파일을 채워 올려주세요.");
+      }
+      const fresh = await fetchTasks();
+      if (!fresh) return notify("업무 데이터를 불러오지 못했습니다.");
+      const result = mergeDistRows(fresh, rows, {
+        statuses: DIST_STATUSES,
+        newId: uid,
+        newCode: nextCode,
+      });
+      setPreview({ fileName: file.name, result });
+    } catch {
+      notify("파일을 읽지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const apply = async () => {
+    if (!preview) return;
+    const { updated, created } = preview.result;
+    const changed = [...updated, ...created] as Task[];
+    if (changed.length === 0) {
+      setPreview(null);
+      return notify("반영할 변경 사항이 없습니다.");
+    }
+    setBusy(true);
+    try {
+      const ok = await runDb(
+        supabase.from("tasks").upsert(changed.map(({ updated_at: _u, ...t }) => t)),
+        notify,
+        "취합 반영 실패",
+      );
+      if (!ok) return;
+      const fresh = await fetchTasks();
+      const ids = new Set(changed.map((t) => t.id));
+      onApplied(fresh ? fresh.filter((t) => ids.has(t.id)) : changed);
+      notify(`취합 반영 완료: 수정 ${updated.length}건 · 추가 ${created.length}건`);
+      setPreview(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const r = preview?.result;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">배포 · 취합</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          조직마다 자기 담당 업무만 든 엑셀을 내려보내고, 채워 돌아온 파일을 올려 병합합니다.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <ZenithCard className="p-6 space-y-4">
+          <h2 className="text-base font-semibold">1. 배포 파일 내려받기</h2>
+          <p className="text-xs text-muted-foreground">
+            선택한 조직(하위 조직 포함) 소속 회원이 담당자인 업무가 들어갑니다. 새 업무는 ID 칸을
+            비워 두고 행을 추가하면 됩니다.
+          </p>
+          <select
+            aria-label="배포 조직"
+            className={inputCls}
+            value={deptId}
+            onChange={(e) => setDeptId(e.target.value)}
+          >
+            <option value="">조직 선택</option>
+            <DepartmentOptions departments={departments} />
+          </select>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => void distribute()} disabled={busy} className={btnPrimary}>
+              <Download className="h-4 w-4" />
+              <span>조직별 배포 파일</span>
+            </button>
+            <button onClick={() => void exportAll()} disabled={busy} className={btnOutline}>
+              <FileSpreadsheet className="h-4 w-4" />
+              <span>전체 취합본 엑셀</span>
+            </button>
+          </div>
+        </ZenithCard>
+
+        <ZenithCard className="p-6 space-y-4">
+          <h2 className="text-base font-semibold">2. 채워진 파일 올려 취합</h2>
+          <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+            <li>빈 칸은 채우고, 파일의 빈 칸은 기존 값을 지우지 않습니다.</li>
+            <li>배포 이후 시스템에서도 바뀐 칸은 시스템 값을 지키고 충돌 보고서에 남깁니다.</li>
+            <li>반영 전에 결과를 미리 보여드립니다.</li>
+          </ul>
+          <label className={cn(btnOutline, "w-full justify-center", busy && "opacity-60")}>
+            <UploadIcon className="h-4 w-4" />
+            <span>엑셀 파일 선택 (.xlsx)</span>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              disabled={busy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void readUpload(f);
+              }}
+            />
+          </label>
+        </ZenithCard>
+      </div>
+
+      {preview && r && (
+        <ZenithCard className="p-6 space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold">취합 미리보기 · {preview.fileName}</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                수정 {r.updated.length}건 (빈 칸 채움 {r.filled} · 덮어씀 {r.changed}) · 추가{" "}
+                {r.created.length}건 · 충돌 {r.conflicts.length}칸
+                {r.unknownIds.length > 0 && ` · 없는 업무 ${r.unknownIds.length}건`}
+                {r.invalidStatus > 0 && ` · 잘못된 상태값 ${r.invalidStatus}칸 무시`}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setPreview(null)} className={btnOutline}>
+                취소
+              </button>
+              <button onClick={() => void apply()} disabled={busy} className={btnPrimary}>
+                <Check className="h-4 w-4" />
+                <span>취합 반영</span>
+              </button>
+            </div>
+          </div>
+
+          {r.conflicts.length > 0 && (
+            <div className="overflow-x-auto rounded-lg border border-warning/30">
+              <p className="border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs font-semibold">
+                충돌 보고 — 배포 후 시스템에서도 수정되어 시스템 값을 지킨 칸
+              </p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border text-muted-foreground">
+                    <th className="px-3 py-2 text-start">업무</th>
+                    <th className="px-3 py-2 text-start">항목</th>
+                    <th className="px-3 py-2 text-start">지킨 값 (시스템)</th>
+                    <th className="px-3 py-2 text-start">버린 값 (파일)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {r.conflicts.map((c) => (
+                    <tr
+                      key={`${c.taskId}-${c.field}`}
+                      className="border-b border-border/50 last:border-0"
+                    >
+                      <td className="px-3 py-2 font-medium">{c.title}</td>
+                      <td className="px-3 py-2">{FIELD_LABELS[c.field as MergeField]}</td>
+                      <td className="px-3 py-2">{c.kept}</td>
+                      <td className="px-3 py-2 text-muted-foreground line-through">{c.incoming}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {r.unknownIds.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              시스템에 없는 업무 ID(삭제된 업무로 보고 건너뜀): {r.unknownIds.join(", ")}
+            </p>
+          )}
+        </ZenithCard>
+      )}
+    </div>
+  );
+}
+
+type AuditLog = {
+  id: number;
+  table_name: string;
+  record_id: string;
+  action: "insert" | "update" | "delete";
+  actor_name: string;
+  old_data: Record<string, unknown> | null;
+  new_data: Record<string, unknown> | null;
+  created_at: string;
+};
+
+const AUDIT_TABLES: Record<string, string> = {
+  tasks: "업무",
+  app_users: "회원",
+  departments: "조직",
+  positions: "직급",
+  weekly_reports: "보고 확정",
+};
+const AUDIT_ACTIONS: Record<AuditLog["action"], string> = {
+  insert: "추가",
+  update: "수정",
+  delete: "삭제",
+};
+const AUDIT_HIDDEN_KEYS = new Set(["id", "created_at", "updated_at", "auth_user_id", "snapshot"]);
+const AUDIT_PAGE = 100;
+
+const auditValue = (v: unknown) =>
+  v === null || v === undefined || v === ""
+    ? "(빈 값)"
+    : typeof v === "object"
+      ? JSON.stringify(v)
+      : String(v);
+
+function AuditLogView({ notify }: { notify: (m: string) => void }) {
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [table, setTable] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+
+  const load = async (append: boolean) => {
+    setLoading(true);
+    try {
+      let q = supabase
+        .from("audit_logs")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(AUDIT_PAGE);
+      if (table) q = q.eq("table_name", table);
+      const last = append ? logs[logs.length - 1] : undefined;
+      if (last) q = q.lt("id", last.id);
+      const { data, error } = await q;
+      if (error || !Array.isArray(data)) return notify("변경 이력을 불러오지 못했습니다.");
+      setLogs((prev) => (append ? [...prev, ...(data as AuditLog[])] : (data as AuditLog[])));
+      setHasMore(data.length === AUDIT_PAGE);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [table]);
+
+  const label = (l: AuditLog) => {
+    const row = { ...(l.old_data ?? {}), ...(l.new_data ?? {}) };
+    return String(row["title"] ?? row["name"] ?? row["week_start"] ?? l.record_id);
+  };
+
+  const changes = (l: AuditLog) => {
+    const keys = Object.keys(l.new_data ?? l.old_data ?? {}).filter(
+      (k) => !AUDIT_HIDDEN_KEYS.has(k),
+    );
+    if (l.action !== "update")
+      return keys.length
+        ? keys.map((k) => `${k}: ${auditValue((l.new_data ?? l.old_data)?.[k])}`)
+        : [];
+    return keys.map((k) => `${k}: ${auditValue(l.old_data?.[k])} → ${auditValue(l.new_data?.[k])}`);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">변경 이력</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            누가 언제 무엇을 바꿨는지 DB 에서 자동으로 기록합니다. 이력은 수정하거나 지울 수
+            없습니다.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            aria-label="대상 필터"
+            className={cn(inputCls, "w-36")}
+            value={table}
+            onChange={(e) => setTable(e.target.value)}
+          >
+            <option value="">전체 대상</option>
+            {Object.entries(AUDIT_TABLES).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v}
+              </option>
+            ))}
+          </select>
+          <button onClick={() => void load(false)} className={btnOutline} aria-label="새로고침">
+            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+          </button>
+        </div>
+      </div>
+
+      <ZenithCard className="p-6">
+        {logs.length === 0 ? (
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            {loading ? "불러오는 중..." : "기록된 변경 이력이 없습니다."}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-xs text-muted-foreground">
+                  <th className="pb-3 pr-3 text-start font-medium">시각</th>
+                  <th className="pb-3 pr-3 text-start font-medium">작업자</th>
+                  <th className="pb-3 pr-3 text-start font-medium">대상</th>
+                  <th className="pb-3 pr-3 text-start font-medium">작업</th>
+                  <th className="pb-3 text-start font-medium">변경 내용</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map((l) => (
+                  <tr key={l.id} className="border-b border-border/50 align-top last:border-0">
+                    <td className="py-2.5 pr-3 text-xs whitespace-nowrap text-muted-foreground">
+                      {formatDateTime(l.created_at)}
+                    </td>
+                    <td className="py-2.5 pr-3 text-xs font-medium whitespace-nowrap">
+                      {l.actor_name || "-"}
+                    </td>
+                    <td className="py-2.5 pr-3 text-xs">
+                      <span className="text-muted-foreground">
+                        {AUDIT_TABLES[l.table_name] ?? l.table_name}
+                      </span>
+                      <span className="block font-medium">{label(l)}</span>
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <span
+                        className={cn(
+                          "rounded-md border px-2 py-0.5 text-[11px] font-semibold",
+                          l.action === "insert" && "border-success/30 bg-success/10 text-success",
+                          l.action === "update" && "border-primary/25 bg-primary/10 text-primary",
+                          l.action === "delete" &&
+                            "border-destructive/30 bg-destructive/10 text-destructive",
+                        )}
+                      >
+                        {AUDIT_ACTIONS[l.action]}
+                      </span>
+                    </td>
+                    <td className="py-2.5 text-xs text-muted-foreground">
+                      {changes(l).map((c) => (
+                        <div key={c} className="break-all">
+                          {c}
+                        </div>
+                      ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {hasMore && (
+          <div className="pt-4 text-center">
+            <button onClick={() => void load(true)} disabled={loading} className={btnOutline}>
+              더 보기
+            </button>
+          </div>
+        )}
+      </ZenithCard>
+    </div>
+  );
+}
+/* ============================================================================
  * 6. NEW TASK MODAL
  * ============================================================================ */
 function NewTaskModal({
@@ -4212,6 +5087,9 @@ function CommandPaletteModal({
     { id: "upload" as ViewId, label: "1. 자료 올리기 (엑셀/CSV)", icon: UploadIcon },
     { id: "kanban" as ViewId, label: "2. 진행상태 (칸반 보드)", icon: KanbanIcon },
     { id: "report" as ViewId, label: "3. 주간업무보고서", icon: FileText },
+    { id: "status" as ViewId, label: "운영 · 제출 현황", icon: ClipboardCheck },
+    { id: "distribute" as ViewId, label: "운영 · 배포 · 취합", icon: FileSpreadsheet },
+    { id: "audit" as ViewId, label: "운영 · 변경 이력", icon: History },
     { id: "members" as ViewId, label: "계정관리 · 회원 관리", icon: Users },
     { id: "org" as ViewId, label: "계정관리 · 조직도 관리", icon: Network },
     { id: "positions" as ViewId, label: "계정관리 · 직급 관리", icon: Award },
