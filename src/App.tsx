@@ -75,6 +75,22 @@ import {
 } from "recharts";
 import { cn } from "@/lib/utils";
 import {
+  STATUSES,
+  analysisToTasks,
+  analyzeDrafts,
+  compareWeeks,
+  fieldsOf,
+  isOverdue,
+  normalizeDate,
+  todayIso,
+  rowsToDrafts,
+  type Draft,
+  type RowAnalysis,
+  type Status,
+  type TaskLike,
+  type WeekComparison,
+} from "@/lib/analysis";
+import {
   addWeeks,
   buildSubmissionStatus,
   DIST_COLUMNS,
@@ -108,8 +124,7 @@ import {
 } from "@/lib/supabase";
 
 export const FIELDS = ["복리후생/총무", "사회공헌/의전", "자산", "비상계획"] as const;
-export const STATUSES = ["대기", "진행 중", "지연 / 이슈", "완료"] as const;
-export type Status = (typeof STATUSES)[number];
+export { STATUSES, type Status };
 
 export type Task = {
   id: string;
@@ -359,26 +374,6 @@ function ZenithCard({
   );
 }
 
-function parsePaste(text: string): Task[] {
-  return text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => l.split(/\t|,|\|/).map((c) => c.trim()))
-    .filter((c) => c.length >= 2 && c[1] !== "업무명")
-    .map((c) => ({
-      id: uid(),
-      code: nextCode(),
-      field: FIELDS.includes(c[0] as never) ? (c[0] as string) : "복리후생/총무",
-      title: c[1] ?? "",
-      owner: c[2] ?? "미지정",
-      due: c[3] ?? "2026-11-15",
-      status: (STATUSES.includes(c[4] as never) ? c[4] : "대기") as Status,
-      progress: c[5] ?? "",
-      issue: c[6] ?? "",
-    }));
-}
-
 export default function App() {
   return (
     <BrowserRouter>
@@ -605,31 +600,39 @@ function Workboard() {
     }
   };
 
-  const handleAddTasks = async (newTasks: Task[]) => {
-    setTasks((prev) => [...newTasks, ...prev]);
+  // 업로드 분석 결과 반영 — 같은 id 는 갱신, 나머지는 추가. DB 저장에 실패하면 화면도 바꾸지 않음
+  const handleAddTasks = async (incoming: Task[]): Promise<boolean> => {
+    const { error } = await supabase.from("tasks").upsert(
+      incoming.map((t) => ({
+        id: t.id,
+        code: t.code,
+        field: t.field,
+        title: t.title,
+        owner: t.owner,
+        due: t.due,
+        status: t.status,
+        progress: t.progress,
+        issue: t.issue,
+      })),
+    );
+    if (error) {
+      notify(`업무 저장 실패: ${error.message}`);
+      return false;
+    }
+    const existingIds = new Set(tasks.map((t) => t.id));
+    const updatedCount = incoming.filter((t) => existingIds.has(t.id)).length;
+    const byId = new Map(incoming.map((t) => [t.id, t]));
+    setTasks((prev) => [
+      ...incoming.filter((t) => !prev.some((p) => p.id === t.id)),
+      ...prev.map((t) => byId.get(t.id) ?? t),
+    ]);
     addActivity({
       type: "upload",
-      title: `업무 자료 ${newTasks.length}건 반영 완료`,
-      description: `${newTasks[0]?.title ?? "신규 업무"} 외 ${Math.max(0, newTasks.length - 1)}건 업로드됨`,
+      title: `업무 자료 ${incoming.length}건 반영 완료`,
+      description: `신규 ${incoming.length - updatedCount}건 · 기존 업무 갱신 ${updatedCount}건`,
     });
-    notify(`${newTasks.length}건이 반영되었습니다.`);
-    try {
-      await supabase.from("tasks").upsert(
-        newTasks.map((t) => ({
-          id: t.id,
-          code: t.code,
-          field: t.field,
-          title: t.title,
-          owner: t.owner,
-          due: t.due,
-          status: t.status,
-          progress: t.progress,
-          issue: t.issue,
-        })),
-      );
-    } catch {
-      // ignore
-    }
+    notify(`${incoming.length}건 반영 (신규 ${incoming.length - updatedCount} · 갱신 ${updatedCount})`);
+    return true;
   };
 
   const handleLogout = async () => {
@@ -1328,8 +1331,10 @@ function Workboard() {
             {activeView === "upload" && (
               <UploadView
                 tasks={tasks}
-                onAdd={handleAddTasks}
+                users={users}
+                onApply={handleAddTasks}
                 onNavigate={setActiveView}
+                notify={notify}
               />
             )}
             {activeView === "kanban" && (
@@ -2233,10 +2238,13 @@ function ZenithDashboardOverview({
 /* ============================================================================
  * 2. UPLOAD VIEW (Excel/CSV Drag & Drop + Text Paste)
  * ============================================================================ */
+// 파일의 시트마다 머리글로 열을 찾아 읽음 — 「지난주」 이름의 시트는 지난주 자료로 분류
 async function readFiles(files: File[]) {
   const XLSX = await import("xlsx");
-  const cur: Task[] = [];
-  const prev: Task[] = [];
+  const cur: Draft[] = [];
+  const prev: Draft[] = [];
+  let headerSheets = 0;
+  let sheets = 0;
   for (const file of files) {
     const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false });
     for (const name of wb.SheetNames) {
@@ -2245,15 +2253,15 @@ async function readFiles(files: File[]) {
         raw: false,
         defval: "",
       });
-      const tsv = rows
-        .map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " ")).join("\t"))
-        .join("\n");
-      (name.includes("지난주") ? prev : cur).push(...parsePaste(tsv));
+      const parsed = rowsToDrafts(rows.map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " "))));
+      if (parsed.drafts.length === 0) continue;
+      sheets++;
+      if (parsed.headerDetected) headerSheets++;
+      (name.includes("지난주") ? prev : cur).push(...parsed.drafts);
     }
   }
-  return { cur, prev };
+  return { cur, prev, sheets, headerSheets };
 }
-
 type SheetRow = [string, string, string, string, string, string, string];
 
 const JEXCEL_COLUMNS = [
@@ -2269,7 +2277,7 @@ const JEXCEL_COLUMNS = [
 const createEmptySheetRows = (count = 8): SheetRow[] =>
   Array.from({ length: count }, () => ["", "", "", "", "", "", ""]);
 
-function tasksToSheetRows(list: Task[], minRows = 8): SheetRow[] {
+function tasksToSheetRows(list: Draft[], minRows = 8): SheetRow[] {
   const mapped: SheetRow[] = list.map((t) => [
     t.field,
     t.title,
@@ -2285,21 +2293,19 @@ function tasksToSheetRows(list: Task[], minRows = 8): SheetRow[] {
   return mapped;
 }
 
-function sheetRowsToTasks(rows: SheetRow[]): Task[] {
+// 엑셀표는 열 순서가 고정(분야·업무명·담당자·기한·상태·추진현황·이슈)
+function sheetRowsToDrafts(rows: SheetRow[]): Draft[] {
   return rows
-    .filter((r) => r.some((cell) => cell.trim() !== "") && r[1]?.trim() !== "업무명")
-    .filter((r) => r[1]?.trim() || r[0]?.trim())
-    .map((c) => ({
-      id: uid(),
-      code: nextCode(),
-      field: FIELDS.includes(c[0].trim() as never) ? c[0].trim() : "복리후생/총무",
-      title: c[1].trim() || c[0].trim(),
-      owner: c[2].trim() || "미지정",
-      due: c[3].trim() || "2026-11-15",
-      status: (STATUSES.includes(c[4].trim() as never) ? c[4].trim() : "대기") as Status,
-      progress: c[5].trim(),
-      issue: c[6].trim(),
-    }));
+    .map(([field, title, owner, due, status, progress, issue]) => ({
+      field: field.trim(),
+      title: title.trim(),
+      owner: owner.trim(),
+      due: normalizeDate(due),
+      status: status.trim(),
+      progress: progress.trim(),
+      issue: issue.trim(),
+    }))
+    .filter((d) => d.title !== "" && d.title !== "업무명");
 }
 
 function DropZone({
@@ -2404,13 +2410,11 @@ function JexcelSheet({
   subtitle,
   rows,
   setRows,
-  onSubmitRows,
 }: {
   title: string;
   subtitle: string;
   rows: SheetRow[];
   setRows: React.Dispatch<React.SetStateAction<SheetRow[]>>;
-  onSubmitRows: (tasks: Task[]) => void;
 }) {
   const [activeCell, setActiveCell] = useState<{ r: number; c: number }>({ r: 0, c: 0 });
 
@@ -2465,7 +2469,7 @@ function JexcelSheet({
     });
   };
 
-  const validTasks = useMemo(() => sheetRowsToTasks(rows), [rows]);
+  const filledCount = useMemo(() => sheetRowsToDrafts(rows).length, [rows]);
   const activeCoord = `${JEXCEL_COLUMNS[activeCell.c]?.col ?? "A"}${activeCell.r + 1}`;
   const activeVal = rows[activeCell.r]?.[activeCell.c] ?? "";
 
@@ -2529,21 +2533,9 @@ function JexcelSheet({
           >
             비우기
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!validTasks.length) return;
-              onSubmitRows(validTasks);
-              setRows(createEmptySheetRows(8));
-            }}
-            disabled={validTasks.length === 0}
-            className={cn(
-              "inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white shadow-2xs transition-colors hover:bg-emerald-700 cursor-pointer",
-              validTasks.length === 0 && "opacity-50 pointer-events-none",
-            )}
-          >
-            <span>반영하기 ({validTasks.length}건)</span>
-          </button>
+          <span className="rounded-md bg-emerald-600/10 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+            입력 {filledCount}건
+          </span>
         </div>
       </div>
 
@@ -2671,47 +2663,128 @@ function JexcelSheet({
   );
 }
 
+const STATUS_SOURCE_STYLE: Record<RowAnalysis["statusSource"], string> = {
+  입력: "border-border bg-muted text-muted-foreground",
+  추정: "border-primary/25 bg-primary/10 text-primary",
+  기본값: "border-warning/30 bg-warning/10 text-warning-foreground dark:text-warning",
+  "마감 초과": "border-destructive/30 bg-destructive/10 text-destructive",
+};
+
 function UploadView({
   tasks,
-  onAdd,
+  users,
+  onApply,
   onNavigate,
+  notify,
 }: {
   tasks: Task[];
-  onAdd: (t: Task[]) => void;
+  users: AppUser[];
+  onApply: (t: Task[]) => Promise<boolean>;
   onNavigate: (v: ViewId) => void;
+  notify: (m: string) => void;
 }) {
-  const [curSheetRows, setCurSheetRows] = useState<SheetRow[]>(() =>
-    createEmptySheetRows(8),
+  const [curSheetRows, setCurSheetRows] = useState<SheetRow[]>(() => createEmptySheetRows(8));
+  const [prevSheetRows, setPrevSheetRows] = useState<SheetRow[]>(() => createEmptySheetRows(8));
+  const [markOverdue, setMarkOverdue] = useState(true);
+  const [applying, setApplying] = useState(false);
+  // 지난주 엑셀표가 비어 있으면 지난주 확정 보고서(DB)를 비교 기준으로 사용
+  const [lastConfirmed, setLastConfirmed] = useState<TaskLike[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    supabase
+      .from("weekly_reports")
+      .select("snapshot")
+      .eq("week_start", addWeeks(weekStartOf(), -1))
+      .maybeSingle()
+      .then(({ data }) => {
+        const snap = (data as { snapshot?: unknown } | null)?.snapshot;
+        if (alive && Array.isArray(snap)) setLastConfirmed(snap as TaskLike[]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const appendRows = (setRows: React.Dispatch<React.SetStateAction<SheetRow[]>>, drafts: Draft[]) =>
+    setRows((existing) => tasksToSheetRows([...sheetRowsToDrafts(existing), ...drafts], 8));
+
+  // 파일은 바로 반영하지 않고 엑셀표에 채운 뒤, 분석 결과를 확인하고 반영
+  const run = async (files: File[], forcePrev: boolean) => {
+    try {
+      const { cur, prev, sheets, headerSheets } = await readFiles(files);
+      const toPrev = forcePrev ? [...cur, ...prev] : prev;
+      const toCur = forcePrev ? [] : cur;
+      if (toCur.length) appendRows(setCurSheetRows, toCur);
+      if (toPrev.length) appendRows(setPrevSheetRows, toPrev);
+      if (!toCur.length && !toPrev.length) return notify("파일에서 업무 행을 찾지 못했습니다.");
+      notify(
+        `시트 ${sheets}개에서 ${toCur.length + toPrev.length}건을 읽었습니다` +
+          (headerSheets < sheets
+            ? ` (머리글 없는 시트 ${sheets - headerSheets}개는 기본 열 순서로 읽음)`
+            : "") +
+          ". 아래 분석 결과를 확인 후 반영하세요.",
+      );
+    } catch {
+      notify("파일을 읽지 못했습니다.");
+    }
+  };
+
+  const today = todayIso();
+  const curDrafts = useMemo(() => sheetRowsToDrafts(curSheetRows), [curSheetRows]);
+  const prevDrafts = useMemo(() => sheetRowsToDrafts(prevSheetRows), [prevSheetRows]);
+  const memberNames = useMemo(() => users.filter((u) => u.is_active).map((u) => u.name), [users]);
+
+  const analysis = useMemo(
+    () => analyzeDrafts(curDrafts, { existing: tasks, memberNames, today, markOverdue }),
+    [curDrafts, tasks, memberNames, today, markOverdue],
   );
-  const [prevSheetRows, setPrevSheetRows] = useState<SheetRow[]>(() =>
-    createEmptySheetRows(8),
+  const previewTasks = useMemo(
+    () => analysisToTasks<TaskLike>(analysis, () => ({ id: "", code: "" })),
+    [analysis],
   );
 
-  const run = async (files: File[], forcePrev: boolean) => {
-    const { cur, prev } = await readFiles(files);
-    const all = forcePrev ? [...cur, ...prev] : [...cur, ...prev];
-    if (all.length) {
-      onAdd(all);
-      // 파일 업로드 시 하단 엑셀표(Jexcel 시트)에도 함께 채워주어 바로 확인 가능하도록 연동
-      if (forcePrev) {
-        setPrevSheetRows((existing) => {
-          const nonEmpty = existing.filter((r) => r.some((c) => c.trim() !== ""));
-          return tasksToSheetRows([...sheetRowsToTasks(nonEmpty), ...all], 8);
-        });
-      } else {
-        if (cur.length) {
-          setCurSheetRows((existing) => {
-            const nonEmpty = existing.filter((r) => r.some((c) => c.trim() !== ""));
-            return tasksToSheetRows([...sheetRowsToTasks(nonEmpty), ...cur], 8);
-          });
-        }
-        if (prev.length) {
-          setPrevSheetRows((existing) => {
-            const nonEmpty = existing.filter((r) => r.some((c) => c.trim() !== ""));
-            return tasksToSheetRows([...sheetRowsToTasks(nonEmpty), ...prev], 8);
-          });
-        }
-      }
+  const baseline = useMemo(() => {
+    if (prevDrafts.length) {
+      const rows = analyzeDrafts(prevDrafts, {
+        existing: [],
+        memberNames: [],
+        today,
+        markOverdue: false,
+      });
+      return {
+        label: "지난주 보고서 엑셀표",
+        tasks: analysisToTasks<TaskLike>(rows, () => ({ id: "", code: "" })),
+      };
+    }
+    if (lastConfirmed) return { label: "지난주 확정 보고서", tasks: lastConfirmed };
+    return null;
+  }, [prevDrafts, lastConfirmed, today]);
+
+  const comparison = useMemo(
+    () => (baseline && previewTasks.length ? compareWeeks(baseline.tasks, previewTasks) : null),
+    [baseline, previewTasks],
+  );
+
+  const counts = {
+    total: analysis.length,
+    update: analysis.filter((r) => r.matched).length,
+    inferred: analysis.filter((r) => r.statusSource === "추정").length,
+    defaulted: analysis.filter((r) => r.statusSource === "기본값").length,
+    overdue: analysis.filter((r) => r.overdue).length,
+    unknownOwner: analysis.filter((r) => r.unknownOwner).length,
+  };
+
+  const apply = async () => {
+    if (!analysis.length) return;
+    setApplying(true);
+    try {
+      const ok = await onApply(
+        analysisToTasks<Task>(analysis, () => ({ id: uid(), code: nextCode() })),
+      );
+      if (ok) setCurSheetRows(createEmptySheetRows(8));
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -2721,7 +2794,8 @@ function UploadView({
         <div>
           <h1 className="text-2xl font-bold tracking-tight">1. 자료 올리기</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            위쪽에는 팀원별 업무일지 문서를 여러 개 드래그앤드롭하고, 아래쪽 Jexcel 엑셀표에는 엑셀 내용을 바로 붙여넣거나 직접 입력할 수 있습니다.
+            업무일지 파일을 올리거나 엑셀표에 붙여넣으면, 규칙에 따라 자동 분석한 결과를 확인한 뒤
+            칸반 보드와 보고서에 반영합니다.
           </p>
         </div>
         <button onClick={() => onNavigate("kanban")} className={btnOutline}>
@@ -2733,45 +2807,253 @@ function UploadView({
       <div className="flex items-center gap-2.5 rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
         <ShieldCheck className="h-4 w-4 shrink-0" />
         <span>
-          🔒 데이터는 외부 서버로 무단 전송되지 않으며 브라우저 및 지정된 Supabase 워크스페이스에서 안전하게 처리됩니다.
+          🔒 분석은 AI 없이 브라우저 안에서 정해진 규칙으로만 처리되며, 반영한 업무만 지정된
+          Supabase 워크스페이스에 저장됩니다.
         </span>
       </div>
 
-      {/* 상단: 업무일지 / 지난주 보고서 문서 드래그앤드롭 (다중 파일 누적 등록 지원) */}
       <div className="grid gap-4 md:grid-cols-2">
         <DropZone
           title="이번 주 업무일지 (팀원별 파일 여러 개 가능)"
-          hint="「지난주」 이름의 시트가 함께 있으면 지난주 보고서로 읽습니다"
+          hint="머리글(업무명·담당자·기한…)로 열을 찾습니다. 「지난주」 이름의 시트는 지난주 자료로 읽습니다"
           onFiles={(f) => run(f, false)}
         />
         <DropZone
           title="지난주 보고서"
-          hint="엑셀(.xlsx, .xls) 또는 CSV 파일"
+          hint="지난주 대비 변화를 비교하는 기준으로만 쓰고, 업무로 추가하지 않습니다"
           onFiles={(f) => run(f, true)}
         />
       </div>
 
-      {/* 하단: Jexcel 스타일 인터랙티브 엑셀표 (위: 업무일지 문서 / 아래: 엑셀표 구조) */}
       <div className="grid gap-4 xl:grid-cols-2">
         <JexcelSheet
           title="이번 주 업무일지 엑셀표 (직접 입력 / 엑셀 붙여넣기)"
           subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 (엑셀에서 복사 후 셀에 Ctrl+V)"
           rows={curSheetRows}
           setRows={setCurSheetRows}
-          onSubmitRows={onAdd}
         />
         <JexcelSheet
           title="지난주 보고서 엑셀표 (직접 입력 / 엑셀 붙여넣기)"
-          subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 (엑셀에서 복사 후 셀에 Ctrl+V)"
+          subtitle="비교 기준 — 비워 두면 지난주 확정 보고서와 비교합니다"
           rows={prevSheetRows}
           setRows={setPrevSheetRows}
-          onSubmitRows={onAdd}
         />
       </div>
+
+      <ZenithCard className="space-y-5 p-6">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="text-base font-semibold">자동 분석 결과 (규칙 기반)</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              상태가 비어 있으면 추진현황·이슈 문구로 추정하고, 같은 업무명·담당자의 기존 업무는
+              새로 만들지 않고 갱신합니다.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-medium">
+              <input
+                type="checkbox"
+                checked={markOverdue}
+                onChange={(e) => setMarkOverdue(e.target.checked)}
+                className="h-4 w-4 accent-primary"
+              />
+              마감 지난 미완료 업무를 &lsquo;지연 / 이슈&rsquo;로 반영
+            </label>
+            <button
+              onClick={() => void apply()}
+              disabled={applying || analysis.length === 0}
+              className={cn(btnPrimary, (applying || analysis.length === 0) && "opacity-50")}
+            >
+              <Check className="h-4 w-4" />
+              <span>반영하기 ({analysis.length}건)</span>
+            </button>
+          </div>
+        </div>
+
+        {analysis.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
+            이번 주 업무일지 엑셀표에 업무를 입력하거나 파일을 올리면 분석 결과가 표시됩니다.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2 text-xs">
+              {[
+                [`총 ${counts.total}건`, "border-foreground bg-foreground text-background"],
+                [
+                  `신규 ${counts.total - counts.update}건`,
+                  "border-success/30 bg-success/10 text-success",
+                ],
+                [
+                  `기존 업무 갱신 ${counts.update}건`,
+                  "border-primary/25 bg-primary/10 text-primary",
+                ],
+                [`상태 추정 ${counts.inferred}건`, "border-primary/25 bg-primary/5 text-primary"],
+                [`상태 없음→대기 ${counts.defaulted}건`, STATUS_SOURCE_STYLE["기본값"]],
+                [`마감 초과 ${counts.overdue}건`, STATUS_SOURCE_STYLE["마감 초과"]],
+                [`미등록 담당자 ${counts.unknownOwner}건`, STATUS_SOURCE_STYLE["기본값"]],
+              ].map(([label, cls]) => (
+                <span
+                  key={label}
+                  className={cn("rounded-full border px-3 py-1 font-semibold", cls)}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/50 text-xs text-muted-foreground">
+                    {["처리", "업무명", "담당자", "기한", "반영 상태", "분석 근거"].map((h) => (
+                      <th key={h} className="px-3 py-2 text-start font-medium">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {analysis.map((r, i) => (
+                    <tr key={i} className="border-b border-border/50 last:border-0">
+                      <td className="px-3 py-2">
+                        <span
+                          className={cn(
+                            "rounded-md border px-2 py-0.5 text-[11px] font-semibold",
+                            r.matched
+                              ? "border-primary/25 bg-primary/10 text-primary"
+                              : "border-success/30 bg-success/10 text-success",
+                          )}
+                        >
+                          {r.matched ? `갱신 ${r.matched.code ?? ""}` : "신규"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 font-medium">{r.draft.title}</td>
+                      <td className="px-3 py-2">
+                        {r.draft.owner || "미지정"}
+                        {r.unknownOwner && (
+                          <span className="ml-1 text-[11px] font-semibold text-warning-foreground dark:text-warning">
+                            (회원 명단에 없음)
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {r.draft.due || "-"}
+                        {r.overdue && (
+                          <span className="ml-1 text-[11px] font-semibold text-destructive">
+                            마감 초과
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={cn(
+                            "rounded-md border px-2 py-0.5 text-[11px] font-semibold",
+                            statusBadgeStyle[r.status],
+                          )}
+                        >
+                          {r.status}
+                        </span>
+                        {r.matched && r.matched.status !== r.status && (
+                          <span className="ml-1 text-[11px] text-muted-foreground">
+                            (기존 {r.matched.status})
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={cn(
+                            "rounded-md border px-2 py-0.5 text-[11px] font-semibold",
+                            STATUS_SOURCE_STYLE[r.statusSource],
+                          )}
+                        >
+                          {r.statusSource === "입력" && "입력값"}
+                          {r.statusSource === "추정" && "문구로 추정"}
+                          {r.statusSource === "기본값" && "상태 없음 → 대기"}
+                          {r.statusSource === "마감 초과" && "기한 지남 → 지연"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <WeekComparisonPanel comparison={comparison} baselineLabel={baseline?.label ?? null} />
+          </>
+        )}
+      </ZenithCard>
     </div>
   );
 }
 
+function WeekComparisonPanel({
+  comparison,
+  baselineLabel,
+}: {
+  comparison: WeekComparison | null;
+  baselineLabel: string | null;
+}) {
+  if (!comparison || !baselineLabel) {
+    return (
+      <p className="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
+        지난주 대비 변화: 비교 기준이 없습니다. 지난주 보고서를 올리거나, 지난주 보고서를 최종
+        확정해 두면 자동으로 비교합니다.
+      </p>
+    );
+  }
+  const groups: { label: string; cls: string; items: string[] }[] = [
+    {
+      label: "완료됨",
+      cls: "border-success/30 bg-success/5",
+      items: comparison.completed.map((t) => `${t.title} (${t.owner})`),
+    },
+    {
+      label: "상태 변화",
+      cls: "border-primary/25 bg-primary/5",
+      items: comparison.statusChanged.map((c) => `${c.task.title}: ${c.from} → ${c.to}`),
+    },
+    {
+      label: "진척 없음 (추진현황이 지난주와 같음)",
+      cls: "border-warning/30 bg-warning/5",
+      items: comparison.stalled.map((t) => `${t.title} (${t.owner})`),
+    },
+    {
+      label: "이월 (계속 진행)",
+      cls: "border-border bg-muted/30",
+      items: comparison.carried.map((t) => `${t.title} (${t.owner})`),
+    },
+    {
+      label: "신규",
+      cls: "border-success/30 bg-success/5",
+      items: comparison.added.map((t) => `${t.title} (${t.owner})`),
+    },
+    {
+      label: "사라짐 (지난주 미완료, 이번 주 목록에 없음)",
+      cls: "border-destructive/30 bg-destructive/5",
+      items: comparison.dropped.map((t) => `${t.title} (${t.owner})`),
+    },
+  ];
+  return (
+    <div className="space-y-2">
+      <h3 className="text-sm font-semibold">
+        지난주 대비 변화{" "}
+        <span className="text-xs font-normal text-muted-foreground">(기준: {baselineLabel})</span>
+      </h3>
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {groups.map((g) => (
+          <div key={g.label} className={cn("rounded-lg border p-3", g.cls)}>
+            <p className="text-xs font-semibold">
+              {g.label} · {g.items.length}건
+            </p>
+            <ul className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
+              {g.items.length ? g.items.map((it) => <li key={it}>• {it}</li>) : <li>없음</li>}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 /* ============================================================================
  * 3. KANBAN BOARD VIEW
  * ============================================================================ */
@@ -2932,7 +3214,10 @@ function KanbanView({
                     </div>
                     <p className="mt-2.5 text-sm font-bold leading-snug">{t.title}</p>
                     <p className="mt-1.5 text-xs text-muted-foreground">
-                      👤 {t.owner} · 📅 {t.due}
+                      👤 {t.owner} · 📅 {t.due || "기한 미정"}
+                      {isOverdue(t) && (
+                        <span className="ml-1 font-semibold text-destructive">· 마감 초과</span>
+                      )}
                     </p>
                     {t.progress && (
                       <p className="mt-2 rounded-md bg-muted/60 px-2 py-1 text-xs text-foreground/90">
@@ -2963,21 +3248,30 @@ function ReportContent({
   notify,
   title = "주간업무보고서",
   headerExtra,
+  prevTasks,
+  today = todayIso(),
 }: {
   tasks: Task[];
   notify: (m: string) => void;
   title?: string;
   headerExtra?: ReactNode;
+  prevTasks?: TaskLike[] | null; // 지난주 확정본 (없으면 비교 생략)
+  today?: string;
 }) {
   const cnt = (s: Status) => tasks.filter((t) => t.status === s).length;
-  const delayed = tasks.filter((t) => t.status === "지연 / 이슈");
+  // 상태가 지연이거나, 기한이 지났는데 완료되지 않은 업무
+  const delayed = tasks.filter((t) => t.status === "지연 / 이슈" || isOverdue(t, today));
+  const overdueLabel = (t: Task) => (isOverdue(t, today) ? " [마감 초과]" : "");
+  const fields = fieldsOf(tasks, FIELDS);
+  const inField = (fd: string) => tasks.filter((t) => (t.field.trim() || "미분류") === fd);
+  const comparison = prevTasks ? compareWeeks(prevTasks, tasks) : null;
   const done = (l: Task[]) => l.filter((t) => t.status === "완료" || t.status === "진행 중");
   const next = (l: Task[]) => l.filter((t) => t.status !== "완료");
 
   const copy = async () => {
     let s = `${title}\n\nⅠ. 전체 요약\n총 ${tasks.length}건 (완료 ${cnt("완료")} / 진행 중 ${cnt("진행 중")} / 대기 ${cnt("대기")} / 지연 ${cnt("지연 / 이슈")})\n\nⅡ. 분야별 실적\n`;
-    FIELDS.forEach((fd) => {
-      const l = tasks.filter((t) => t.field === fd);
+    fields.forEach((fd) => {
+      const l = inField(fd);
       s += `\n[${fd}]\n 금주 실적:\n${
         done(l)
           .map((t) => `  - ${t.title} (${t.owner}): ${t.progress}`)
@@ -2989,9 +3283,30 @@ function ReportContent({
       }\n`;
     });
     s += `\nⅢ. 주요 이슈 및 지연 업무\n${
-      delayed.map((t) => `  - ${t.title} (${t.owner}): ${t.issue || t.progress}`).join("\n") ||
-      "  - 없음"
+      delayed
+        .map((t) => `  - ${t.title} (${t.owner})${overdueLabel(t)}: ${t.issue || t.progress}`)
+        .join("\n") || "  - 없음"
     }`;
+    if (comparison) {
+      const line = (label: string, items: string[]) =>
+        `\n [${label}] ${items.length ? items.join(", ") : "없음"}`;
+      s += `\n\nⅣ. 지난주 대비 변화${line(
+        "완료됨",
+        comparison.completed.map((t) => t.title),
+      )}${line(
+        "상태 변화",
+        comparison.statusChanged.map((c) => `${c.task.title}(${c.from}→${c.to})`),
+      )}${line(
+        "진척 없음",
+        comparison.stalled.map((t) => t.title),
+      )}${line(
+        "신규",
+        comparison.added.map((t) => t.title),
+      )}${line(
+        "사라짐",
+        comparison.dropped.map((t) => t.title),
+      )}`;
+    }
     try {
       await navigator.clipboard.writeText(s);
       notify("보고서 텍스트가 클립보드에 복사되었습니다.");
@@ -3055,16 +3370,14 @@ function ReportContent({
               </tr>
             </thead>
             <tbody>
-              {FIELDS.map((fd) => {
-                const l = tasks.filter((t) => t.field === fd);
+              {fields.map((fd) => {
+                const l = inField(fd);
                 return (
                   <tr
                     key={fd}
                     className="border-b border-border last:border-b-0 align-top transition-colors hover:bg-muted/20"
                   >
-                    <td className="w-40 border-r border-border px-4 py-3.5 font-semibold">
-                      {fd}
-                    </td>
+                    <td className="w-40 border-r border-border px-4 py-3.5 font-semibold">{fd}</td>
                     <td className="border-r border-border px-4 py-3.5 space-y-1">
                       {done(l).length ? (
                         done(l).map((t) => (
@@ -3107,7 +3420,12 @@ function ReportContent({
                 className="rounded-xl border border-destructive/25 border-l-4 border-l-destructive bg-destructive/10 p-4"
               >
                 <p className="font-bold text-destructive">
-                  ⚠ {t.title}{" "}
+                  ⚠ {t.title}
+                  {isOverdue(t, today) && (
+                    <span className="ml-1.5 rounded border border-destructive/30 px-1.5 py-0.5 text-[10px]">
+                      마감 초과
+                    </span>
+                  )}{" "}
                   <span className="text-xs font-normal text-foreground/80">
                     ({t.field} · {t.owner} · {t.due})
                   </span>
@@ -3122,10 +3440,17 @@ function ReportContent({
           <p className="text-sm text-muted-foreground">지연 업무가 없습니다.</p>
         )}
       </section>
+
+      <section>
+        <h3 className="mb-3 text-base font-bold">Ⅳ. 지난주 대비 변화</h3>
+        <WeekComparisonPanel
+          comparison={comparison}
+          baselineLabel={comparison ? "지난주 확정 보고서" : null}
+        />
+      </section>
     </ZenithCard>
   );
 }
-
 /* ============================================================================
  * 5. ADMIN USER MANUAL REGISTRATION VIEW (관리자 직접 수동 등록)
  * ============================================================================ */
@@ -4247,6 +4572,7 @@ function ReportView({
 }) {
   const [week, setWeek] = useState(() => weekStartOf());
   const [report, setReport] = useState<WeeklyReport | null>(null);
+  const [prevReport, setPrevReport] = useState<TaskLike[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const isAdmin = currentUser.role === "관리자";
@@ -4263,6 +4589,15 @@ function ReportView({
         if (!alive) return;
         setReport((data as WeeklyReport | null) ?? null);
         setLoading(false);
+      });
+    supabase
+      .from("weekly_reports")
+      .select("snapshot")
+      .eq("week_start", addWeeks(week, -1))
+      .maybeSingle()
+      .then(({ data }) => {
+        const snap = (data as { snapshot?: unknown } | null)?.snapshot;
+        if (alive) setPrevReport(Array.isArray(snap) ? (snap as TaskLike[]) : null);
       });
     return () => {
       alive = false;
@@ -4358,6 +4693,11 @@ function ReportView({
         <ReportContent
           tasks={shown}
           notify={notify}
+          prevTasks={prevReport}
+          today={
+            // 확정본은 확정 시점 기준으로 마감 초과를 판단
+            report ? report.confirmed_at.slice(0, 10) : todayIso()
+          }
           title={`주간업무보고서 (${weekLabel(week)})`}
           headerExtra={
             confirmed ? (
