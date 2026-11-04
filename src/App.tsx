@@ -38,7 +38,6 @@ import {
   X,
   Menu,
   Sparkles,
-  ShieldCheck,
   FileSpreadsheet,
   CheckCheck,
   PanelLeft,
@@ -2895,8 +2894,7 @@ function UploadView({
         <div>
           <h1 className="text-2xl font-bold tracking-tight">1. 자료 올리기</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            업무일지 파일을 올리거나 엑셀표에 붙여넣으면, 규칙에 따라 자동 분석한 결과를 확인한 뒤
-            칸반 보드와 보고서에 반영합니다.
+            엑셀로 업무를 한꺼번에 등록·갱신합니다.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -2911,13 +2909,27 @@ function UploadView({
         </div>
       </div>
 
-      <div className="flex items-center gap-2.5 rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
-        <ShieldCheck className="h-4 w-4 shrink-0" />
-        <span>
-          🔒 분석은 AI 없이 브라우저 안에서 정해진 규칙으로만 처리되며, 반영한 업무만 지정된
-          Supabase 워크스페이스에 저장됩니다.
-        </span>
-      </div>
+      {/* 사용 순서 — 짧게 */}
+      <ol className="grid gap-2 text-sm sm:grid-cols-3">
+        {[
+          ["양식 받아 작성", "업무명·담당자는 지난주와 똑같이"],
+          ["파일 올리기", "아직 저장 안 됨 — 아래에서 분석 확인"],
+          ["반영하기", "칸반·보고서에 바로 반영"],
+        ].map(([title, desc], i) => (
+          <li
+            key={title}
+            className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
+          >
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
+              {i + 1}
+            </span>
+            <span>
+              <b className="block">{title}</b>
+              <span className="text-xs text-muted-foreground">{desc}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
 
       <div className="grid gap-4 md:grid-cols-2">
         <DropZone
