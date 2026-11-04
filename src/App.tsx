@@ -2628,6 +2628,9 @@ function JexcelSheet({
                   </th>
                 );
               })}
+              <th className="w-10 border-b border-l border-border py-1.5 text-center font-semibold">
+                삭제
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -2643,22 +2646,7 @@ function JexcelSheet({
                         "bg-emerald-500/15 font-bold text-emerald-700 dark:text-emerald-300",
                     )}
                   >
-                    {/* 행 번호 — 마우스를 올리면 행 삭제 버튼 */}
-                    <span className="group-hover:hidden">{rIdx + 1}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setRows((prev) => {
-                          const next = prev.filter((_, i) => i !== rIdx);
-                          return next.length ? next : createEmptySheetRows(1);
-                        })
-                      }
-                      aria-label={`${rIdx + 1}행 삭제`}
-                      title="행 삭제"
-                      className="hidden w-full text-destructive group-hover:block cursor-pointer"
-                    >
-                      ×
-                    </button>
+                    {rIdx + 1}
                   </td>
 
                   {/* 7 Editable Jexcel Cells */}
@@ -2706,6 +2694,23 @@ function JexcelSheet({
                       </td>
                     );
                   })}
+                  {/* 행 삭제 (항상 표시) */}
+                  <td className="border-b border-l border-border text-center">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRows((prev) => {
+                          const next = prev.filter((_, i) => i !== rIdx);
+                          return next.length ? next : createEmptySheetRows(1);
+                        })
+                      }
+                      aria-label={`${rIdx + 1}행 삭제`}
+                      title="행 삭제"
+                      className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -3353,7 +3358,7 @@ function UploadView({
               </div>
               <JexcelSheet
                 title={`${f.file_name} — 내용 보기·수정`}
-                subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 (행을 지우려면 업무명을 비우거나 비우기 후 다시 입력)"
+                subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 · 행 끝의 휴지통으로 행 삭제"
                 rows={editorRows}
                 setRows={(next) => {
                   if (!editable) return;

@@ -131,7 +131,9 @@ describe("App (Supabase Auth + Admin Manual Registration + 업무보고 Jexcel W
 
     fireEvent.click(screen.getAllByText("샘플 채우기")[0]!);
     expect(screen.getByText("저장하지 않은 수정 있음")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "반영하기 (2건)" }));
+    // 행 끝 휴지통 버튼으로 2행 삭제 → 반영 대상 1건
+    fireEvent.click(screen.getByRole("button", { name: "2행 삭제" }));
+    fireEvent.click(screen.getByRole("button", { name: "반영하기 (1건)" }));
     expect(await screen.findByText(/반영됨/)).toBeInTheDocument();
 
     // 계정관리 · 직급 관리에서 직급 추가
