@@ -4,6 +4,8 @@ import {
   analysisToTasks,
   analyzeDrafts,
   compareWeeks,
+  DRAFT_KEYS,
+  TEMPLATE_HEADERS,
   detectColumns,
   fieldsOf,
   inferStatus,
@@ -47,6 +49,11 @@ describe("열 찾기", () => {
       status: 3,
       progress: 4,
     });
+  });
+
+  it("양식 엑셀 머리글은 모든 열이 제자리로 인식된다", () => {
+    const header = DRAFT_KEYS.map((k) => TEMPLATE_HEADERS[k]);
+    expect(detectColumns(header)).toEqual(Object.fromEntries(DRAFT_KEYS.map((k, i) => [k, i])));
   });
 
   it("업무명 열이 없으면 머리글로 보지 않는다", () => {

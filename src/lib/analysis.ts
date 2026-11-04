@@ -44,6 +44,17 @@ const COLUMN_ALIASES: Record<DraftKey, string[]> = {
 const normHeader = (s: string) => s.replace(/\s+/g, "").toLowerCase();
 
 // 머리글 행이면 열 위치를, 아니면 null (업무명 열은 반드시 있어야 함)
+// 업무일지 양식 머리글 — 자료 올리기에서 그대로 인식되는 이름
+export const TEMPLATE_HEADERS: Record<DraftKey, string> = {
+  field: "분야",
+  title: "업무명",
+  owner: "담당자",
+  due: "기한",
+  status: "상태",
+  progress: "추진현황",
+  issue: "이슈",
+};
+
 export function detectColumns(header: string[]): Partial<Record<DraftKey, number>> | null {
   const cells = header.map((h) => normHeader(String(h ?? "")));
   const mapping: Partial<Record<DraftKey, number>> = {};

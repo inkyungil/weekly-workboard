@@ -84,6 +84,8 @@ import {
   normalizeDate,
   todayIso,
   rowsToDrafts,
+  DRAFT_KEYS,
+  TEMPLATE_HEADERS,
   type Draft,
   type RowAnalysis,
   type Status,
@@ -2255,6 +2257,8 @@ async function readFiles(files: File[]) {
   for (const file of files) {
     const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false });
     for (const name of wb.SheetNames) {
+      // 양식의 「작성 안내」 시트(예시 행 포함)는 읽지 않음
+      if (name.includes("안내")) continue;
       const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name]!, {
         header: 1,
         raw: false,
@@ -2737,6 +2741,71 @@ function UploadView({
     }
   };
 
+  // 업무일지 양식: 「업무일지」 시트는 머리글만, 「작성 안내」 시트에 규칙·예시·선택값
+  const downloadTemplate = async () => {
+    try {
+      const XLSX = await import("xlsx");
+      const header = DRAFT_KEYS.map((k) => TEMPLATE_HEADERS[k]);
+      const sheet = XLSX.utils.aoa_to_sheet([header]);
+      sheet["!cols"] = DRAFT_KEYS.map((k) => ({
+        wch: k === "title" || k === "progress" || k === "issue" ? 36 : 14,
+      }));
+
+      const fields = fieldsOf(tasks, FIELDS);
+      const members = users.filter((u) => u.is_active).map((u) => u.name);
+      const guide = XLSX.utils.aoa_to_sheet([
+        ["주간업무 업무일지 작성 안내"],
+        [],
+        [
+          "1. 「업무일지」 시트의 첫 줄(머리글)은 지우거나 바꾸지 말고, 둘째 줄부터 한 업무씩 입력하세요.",
+        ],
+        ["2. 업무명은 꼭 입력하세요. 업무명이 빈 행은 읽지 않습니다."],
+        [
+          "3. 지난주부터 이어지는 업무는 업무명과 담당자를 지난주와 똑같이 적어야 같은 업무로 이어집니다.",
+        ],
+        ["4. 기한은 2026-11-05 또는 2026.11.5 형식으로 적으세요."],
+        [
+          `5. 상태는 ${STATUSES.join(" / ")} 중 하나로 적으세요. 비워 두면 추진현황·이슈 문구로 추정합니다.`,
+        ],
+        ["6. 담당자는 회원 명단의 이름과 똑같이 적어야 제출 현황에 반영됩니다."],
+        [],
+        ["[입력 예시 — 이 시트의 예시는 업로드되지 않습니다]"],
+        header,
+        [
+          "자산",
+          "하반기 고정자산 실사",
+          members[0] ?? "홍길동",
+          "2026-11-12",
+          "진행 중",
+          "1차 바코드 실사 완료, 2차 준비 중",
+          "",
+        ],
+        [
+          "복리후생/총무",
+          "동계 콘도 추첨 시스템 오픈",
+          members[1] ?? "김철수",
+          "2026-11-04",
+          "지연 / 이슈",
+          "인증 오류 조치 중",
+          "외부 연동 지연",
+        ],
+        [],
+        ["[상태 선택값]", ...STATUSES],
+        ["[분야 예시]", ...fields],
+        ["[담당자(회원) 명단]", ...members],
+      ]);
+      guide["!cols"] = [{ wch: 22 }, ...Array.from({ length: 8 }, () => ({ wch: 18 }))];
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, sheet, "업무일지");
+      XLSX.utils.book_append_sheet(wb, guide, "작성 안내");
+      XLSX.writeFile(wb, `주간업무_업무일지_양식_${weekStartOf()}.xlsx`);
+      notify("업무일지 양식을 내려받았습니다. 팀원에게 배포해 같은 양식으로 작성하게 하세요.");
+    } catch {
+      notify("양식 파일을 만들지 못했습니다.");
+    }
+  };
+
   const today = todayIso();
   const curDrafts = useMemo(() => sheetRowsToDrafts(curSheetRows), [curSheetRows]);
   const prevDrafts = useMemo(() => sheetRowsToDrafts(prevSheetRows), [prevSheetRows]);
@@ -2805,10 +2874,16 @@ function UploadView({
             칸반 보드와 보고서에 반영합니다.
           </p>
         </div>
-        <button onClick={() => onNavigate("kanban")} className={btnOutline}>
-          <span>칸반 보드로 이동 ({tasks.length}건)</span>
-          <ArrowUpRight className="h-4 w-4" />
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => void downloadTemplate()} className={btnPrimary}>
+            <Download className="h-4 w-4" />
+            <span>업무일지 양식 내려받기</span>
+          </button>
+          <button onClick={() => onNavigate("kanban")} className={btnOutline}>
+            <span>칸반 보드로 이동 ({tasks.length}건)</span>
+            <ArrowUpRight className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <div className="flex items-center gap-2.5 rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
@@ -2992,7 +3067,6 @@ function UploadView({
     </div>
   );
 }
-
 function WeekComparisonPanel({
   comparison,
   baselineLabel,
