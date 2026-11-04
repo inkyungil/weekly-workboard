@@ -4,18 +4,26 @@ import { describe, expect, it } from "vitest";
 import App from "@/App";
 
 describe("App (Supabase Auth + Admin Manual Registration + Zenith Jexcel Workboard)", () => {
-  it("renders the login screen first with Zenith 주간업무 보고서 branding and admin-only registration policy", () => {
+  it("renders the login screen first with Zenith 주간업무 보고서 branding and admin-only registration policy", async () => {
     render(<App />);
 
-    expect(screen.getByText("주간업무 보고서")).toBeInTheDocument();
+    expect(await screen.findByText("주간업무 보고서")).toBeInTheDocument();
     expect(screen.getByText("업무관리 시스템 로그인")).toBeInTheDocument();
     expect(screen.getByText("회원가입 안내 (관리자 수동 등록 전용)")).toBeInTheDocument();
+  });
+
+  it("redirects a logged-out visit to a page URL to /login", async () => {
+    window.history.pushState({}, "", "/kanban");
+    render(<App />);
+
+    expect(await screen.findByText("업무관리 시스템 로그인")).toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe("/login"));
   });
 
   it("logs in as admin, checks Jexcel sheets in Upload view, and registers a user manually", async () => {
     render(<App />);
 
-    fireEvent.change(screen.getByPlaceholderText("예: admin"), {
+    fireEvent.change(await screen.findByPlaceholderText("예: admin"), {
       target: { value: "admin" },
     });
     fireEvent.change(screen.getByPlaceholderText("••••"), {

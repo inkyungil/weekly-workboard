@@ -6,6 +6,7 @@ import {
   type ReactNode,
   type FormEvent,
 } from "react";
+import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   Upload as UploadIcon,
@@ -104,6 +105,21 @@ type ActivityItem = {
 };
 
 type ViewId = "dashboard" | "upload" | "kanban" | "report" | "users";
+
+// 화면별 URL — 각 ViewId 는 /<ViewId> 경로에 대응
+const VIEW_IDS: ViewId[] = ["dashboard", "upload", "kanban", "report", "users"];
+const VIEW_TITLES: Record<ViewId, string> = {
+  dashboard: "대시보드",
+  upload: "자료 올리기",
+  kanban: "진행상태",
+  report: "주간업무보고서",
+  users: "사용자 관리",
+};
+const viewPath = (v: ViewId) => `/${v}`;
+const pathToView = (pathname: string): ViewId | null => {
+  const seg = pathname.replace(/^\/+|\/+$/g, "");
+  return (VIEW_IDS as string[]).includes(seg) ? (seg as ViewId) : null;
+};
 type ThemeMode = "light" | "dark" | "system";
 type ColorPreset = "neutral" | "zinc" | "blue" | "violet" | "rose" | "orange";
 type DensityMode = "compact" | "comfortable" | "spacious";
@@ -303,15 +319,27 @@ function parsePaste(text: string): Task[] {
 }
 
 export default function App() {
+  return (
+    <BrowserRouter>
+      <Workboard />
+    </BrowserRouter>
+  );
+}
+
+function Workboard() {
+  const location = useLocation();
+  const navigate = useNavigate();
   // Supabase Auth: 로그인 화면부터 시작하며, 회원가입은 관리자가 직접 수동 등록으로 진행
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
   const [users, setUsers] = useState<AppUser[]>(() => loadLocalUsers());
   const [currentUser, setCurrentUser] = useState<AppUser>(
     () => loadLocalUsers()[0]!,
   );
   const [tasks, setTasks] = useState<Task[]>(SAMPLE);
   const [activities, setActivities] = useState<ActivityItem[]>(INITIAL_ACTIVITIES);
-  const [activeView, setActiveView] = useState<ViewId>("dashboard");
+  const activeView: ViewId = pathToView(location.pathname) ?? "dashboard";
+  const setActiveView = (v: ViewId) => navigate(viewPath(v));
   const [supabaseConnected, setSupabaseConnected] = useState(true);
   const [dbTableReady, setDbTableReady] = useState(false);
 
@@ -397,6 +425,8 @@ export default function App() {
         await loadRemoteData(() => mounted);
       } catch {
         if (mounted) setSupabaseConnected(false);
+      } finally {
+        if (mounted) setAuthChecked(true);
       }
     }
 
@@ -405,6 +435,26 @@ export default function App() {
       mounted = false;
     };
   }, []);
+
+  // URL 가드: 비로그인 → /login (원래 가려던 경로 기억), 로그인 상태에서 /login·/·없는 경로 → 화면으로 이동
+  useEffect(() => {
+    if (!authChecked) return;
+    const view = pathToView(location.pathname);
+    if (!isLoggedIn) {
+      if (location.pathname !== "/login") {
+        navigate("/login", { replace: true, state: { from: view ? location.pathname : undefined } });
+      }
+    } else if (!view) {
+      const from = (location.state as { from?: string } | null)?.from;
+      navigate(from ?? viewPath("dashboard"), { replace: true });
+    }
+  }, [authChecked, isLoggedIn, location.pathname, location.state, navigate]);
+
+  useEffect(() => {
+    document.title = isLoggedIn
+      ? `${VIEW_TITLES[activeView]} · Zenith 주간업무 보고서`
+      : "로그인 · Zenith 주간업무 보고서";
+  }, [isLoggedIn, activeView]);
 
   // Apply Zenith theme / preset / density to <html>
   useEffect(() => {
@@ -522,6 +572,9 @@ export default function App() {
   // ----------------------------------------------------------------------------
   // LOGIN GATE (Starts at Login screen; Sign-up is admin-only manual registration)
   // ----------------------------------------------------------------------------
+  // 세션 확인 전에는 로그인 화면이 깜빡이지 않도록 대기
+  if (!authChecked) return null;
+
   if (!isLoggedIn) {
     return (
       <>
