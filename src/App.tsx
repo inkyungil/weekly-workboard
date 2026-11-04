@@ -1221,7 +1221,7 @@ function Workboard() {
                         className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium hover:bg-accent cursor-pointer"
                       >
                         <UserPlus className="h-3.5 w-3.5 text-muted-foreground" />
-                        사용자 수동 등록 관리
+                        회원 관리
                       </button>
                       <button
                         onClick={() => {
@@ -1252,7 +1252,11 @@ function Workboard() {
             {/* Quick Navigation Sub-bar */}
             <nav
               aria-label="Quick view tabs"
-              className="flex items-center justify-between border-b border-border bg-background/70 px-4 backdrop-blur-xl sm:px-6 overflow-x-auto"
+              className={cn(
+                "flex items-center justify-between gap-3 border-b border-border bg-background/70 px-4 backdrop-blur-xl sm:px-6 overflow-x-auto",
+                // 사이드바가 보이는 PC 화면에서는 사이드바와 중복되므로 숨김 (상단 메뉴 레이아웃에서는 유지)
+                layout === "sidebar" && "lg:hidden",
+              )}
             >
               <div className="flex items-center gap-1">
                 {[
@@ -1290,8 +1294,8 @@ function Workboard() {
                   );
                 })}
               </div>
-              <div className="hidden items-center gap-2 text-xs text-muted-foreground lg:flex">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-medium">
+              <div className="hidden shrink-0 items-center gap-2 text-xs text-muted-foreground lg:flex">
+                <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-medium">
                   <span
                     className={cn(
                       "h-1.5 w-1.5 rounded-full",
@@ -1305,7 +1309,10 @@ function Workboard() {
           </div>
 
           {/* Main Workspace Area */}
-          <main id="main-content" className="flex-1 p-4 sm:p-6">
+          <main
+            id="main-content"
+            className="flex-1 p-4 sm:p-6 lg:px-8 [&>*]:mx-auto [&>*]:w-full [&>*]:max-w-[1760px]"
+          >
             {activeView === "dashboard" && (
               <ZenithDashboardOverview
                 tasks={tasks}
@@ -1616,7 +1623,7 @@ export function Login({
             </div>
             <p className="leading-relaxed">
               본 시스템은 보안 정책상 자체 회원가입을 지원하지 않으며,{" "}
-              <b>관리자가 [사용자 수동 등록] 메뉴에서 직접 계정을 발급</b>합니다.
+              <b>관리자가 [계정관리 › 회원 관리] 메뉴에서 직접 계정을 발급</b>합니다.
             </p>
             <p className="pt-1 text-center font-medium text-foreground">
               관리자 아이디: <code className="rounded bg-background px-1.5 py-0.5">admin</code>
@@ -1755,7 +1762,7 @@ function ZenithDashboardOverview({
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => onNavigate("members")} className={btnOutline}>
             <UserPlus className="h-4 w-4 text-primary" />
-            <span>사용자 수동 등록</span>
+            <span>회원 등록</span>
           </button>
           <button onClick={() => onNavigate("upload")} className={btnOutline}>
             <FileSpreadsheet className="h-4 w-4" />
@@ -2825,7 +2832,7 @@ function UploadView({
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-4">
         <JexcelSheet
           title="이번 주 업무일지 엑셀표 (직접 입력 / 엑셀 붙여넣기)"
           subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 (엑셀에서 복사 후 셀에 Ctrl+V)"
@@ -3093,7 +3100,8 @@ function KanbanView({
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((t) => {
-      const matchesField = selectedField === "전체" || t.field === selectedField;
+      const matchesField =
+        selectedField === "전체" || (t.field.trim() || "미분류") === selectedField;
       const q = searchQuery.trim().toLowerCase();
       const matchesSearch =
         !q ||
@@ -3120,7 +3128,7 @@ function KanbanView({
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-1.5">
-          {["전체", ...FIELDS].map((fd) => (
+          {["전체", ...fieldsOf(tasks, FIELDS)].map((fd) => (
             <button
               key={fd}
               onClick={() => setSelectedField(fd)}
