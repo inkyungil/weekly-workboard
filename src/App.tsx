@@ -39,7 +39,6 @@ import {
   Sparkles,
   ShieldCheck,
   FileSpreadsheet,
-  ClipboardPaste,
   CheckCheck,
   PanelLeft,
   PanelTop,
@@ -630,7 +629,7 @@ export default function App() {
               Zenith
             </span>
             <span className="truncate text-[10px] font-medium uppercase tracking-widest text-sidebar-foreground/40">
-              업무관리 시스템
+              주간업무 보고서
             </span>
           </div>
         )}
@@ -856,7 +855,12 @@ export default function App() {
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary">
                       <Layers className="h-4 w-4 text-primary-foreground" />
                     </div>
-                    <span className="text-sm font-bold tracking-tight">Zenith</span>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-bold leading-none tracking-tight">Zenith</span>
+                      <span className="mt-0.5 text-[10px] font-medium text-muted-foreground">
+                        주간업무 보고서
+                      </span>
+                    </div>
                     <div className="mx-1 h-6 w-px bg-border" />
                   </div>
                 )}
@@ -1397,7 +1401,7 @@ export function Login({
             <div>
               <span className="text-sm font-bold tracking-tight">Zenith</span>
               <span className="block text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-                Supabase Auth · Admin
+                주간업무 보고서
               </span>
             </div>
           </div>
@@ -2093,6 +2097,54 @@ async function readFiles(files: File[]) {
   return { cur, prev };
 }
 
+type SheetRow = [string, string, string, string, string, string, string];
+
+const JEXCEL_COLUMNS = [
+  { col: "A", label: "분야", width: "w-[125px]" },
+  { col: "B", label: "업무명", width: "min-w-[160px]" },
+  { col: "C", label: "담당자", width: "w-[88px]" },
+  { col: "D", label: "기한", width: "w-[115px]" },
+  { col: "E", label: "상태", width: "w-[100px]" },
+  { col: "F", label: "추진현황", width: "min-w-[140px]" },
+  { col: "G", label: "이슈", width: "min-w-[120px]" },
+] as const;
+
+const createEmptySheetRows = (count = 8): SheetRow[] =>
+  Array.from({ length: count }, () => ["", "", "", "", "", "", ""]);
+
+function tasksToSheetRows(list: Task[], minRows = 8): SheetRow[] {
+  const mapped: SheetRow[] = list.map((t) => [
+    t.field,
+    t.title,
+    t.owner,
+    t.due,
+    t.status,
+    t.progress,
+    t.issue,
+  ]);
+  while (mapped.length < minRows) {
+    mapped.push(["", "", "", "", "", "", ""]);
+  }
+  return mapped;
+}
+
+function sheetRowsToTasks(rows: SheetRow[]): Task[] {
+  return rows
+    .filter((r) => r.some((cell) => cell.trim() !== "") && r[1]?.trim() !== "업무명")
+    .filter((r) => r[1]?.trim() || r[0]?.trim())
+    .map((c) => ({
+      id: uid(),
+      code: nextCode(),
+      field: FIELDS.includes(c[0].trim() as never) ? c[0].trim() : "복리후생/총무",
+      title: c[1].trim() || c[0].trim(),
+      owner: c[2].trim() || "미지정",
+      due: c[3].trim() || "2026-11-15",
+      status: (STATUSES.includes(c[4].trim() as never) ? c[4].trim() : "대기") as Status,
+      progress: c[5].trim(),
+      issue: c[6].trim(),
+    }));
+}
+
 function DropZone({
   title,
   hint,
@@ -2104,16 +2156,26 @@ function DropZone({
 }) {
   const [over, setOver] = useState(false);
   const [names, setNames] = useState<string[]>([]);
+
   const handle = (list: FileList | null) => {
     const f = Array.from(list ?? []).filter((x) => /\.(xlsx|xls|csv)$/i.test(x.name));
     if (!f.length) return;
-    setNames(f.map((x) => x.name));
+    // 여러 문서를 순차적으로 또는 동시에 드래그앤드롭해도 누적 등록되도록 처리
+    setNames((prev) => [...prev, ...f.map((x) => x.name)]);
     onFiles(f);
   };
+
   return (
-    <ZenithCard className="p-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold">{title}</h2>
+    <ZenithCard className="p-5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold">{title}</h2>
+          {names.length > 0 && (
+            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-semibold text-primary">
+              등록 문서 {names.length}개
+            </span>
+          )}
+        </div>
         <span className="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
           .xlsx · .xls · .csv
         </span>
@@ -2130,7 +2192,7 @@ function DropZone({
           handle(e.dataTransfer.files);
         }}
         className={cn(
-          "mt-4 flex h-48 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 text-center transition-all duration-200",
+          "mt-3.5 flex h-40 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 text-center transition-all duration-200",
           over
             ? "border-primary bg-primary/5"
             : "border-border hover:border-primary/40 hover:bg-muted/40",
@@ -2146,24 +2208,308 @@ function DropZone({
             e.target.value = "";
           }}
         />
-        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-          <FileSpreadsheet className="h-6 w-6" />
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <FileSpreadsheet className="h-5 w-5" />
         </div>
-        <p className="mt-3 text-sm font-medium">
-          업무일지 파일을 끌어다 놓거나 눌러서 고르세요
+        <p className="mt-2.5 text-sm font-medium">
+          업무일지 파일을 끌어다 놓거나 눌러서 고르세요 (다중 파일 누적 등록 가능)
         </p>
         <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
       </label>
       {names.length > 0 && (
-        <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
-          {names.map((n) => (
-            <li key={n} className="flex items-center gap-1.5">
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          {names.map((n, idx) => (
+            <span
+              key={`${n}-${idx}`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted/50 px-2.5 py-1 text-xs text-foreground"
+            >
               <span>📄</span>
-              <span className="font-medium text-foreground">{n}</span>
-            </li>
+              <span className="font-medium">{n}</span>
+              <button
+                type="button"
+                onClick={() => setNames((prev) => prev.filter((_, i) => i !== idx))}
+                className="ms-0.5 rounded text-muted-foreground hover:text-destructive cursor-pointer"
+                aria-label={`${n} 목록에서 제거`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
           ))}
-        </ul>
+        </div>
       )}
+    </ZenithCard>
+  );
+}
+
+/* Jexcel / Jspreadsheet 스타일 인터랙티브 엑셀 시트 컴포넌트 */
+function JexcelSheet({
+  title,
+  subtitle,
+  rows,
+  setRows,
+  onSubmitRows,
+}: {
+  title: string;
+  subtitle: string;
+  rows: SheetRow[];
+  setRows: React.Dispatch<React.SetStateAction<SheetRow[]>>;
+  onSubmitRows: (tasks: Task[]) => void;
+}) {
+  const [activeCell, setActiveCell] = useState<{ r: number; c: number }>({ r: 0, c: 0 });
+
+  const updateCell = (rIdx: number, cIdx: number, val: string) => {
+    setRows((prev) =>
+      prev.map((row, i) => {
+        if (i !== rIdx) return row;
+        const copy = [...row] as SheetRow;
+        copy[cIdx] = val;
+        return copy;
+      }),
+    );
+  };
+
+  // 엑셀에서 여러 행·열 복사(Ctrl+C) 후 시트 내 아무 셀에서나 붙여넣기(Ctrl+V) 처리
+  const handleCellPaste = (
+    e: React.ClipboardEvent<HTMLInputElement | HTMLSelectElement>,
+    startR: number,
+    startC: number,
+  ) => {
+    const raw = e.clipboardData.getData("text/plain");
+    if (!raw || (!raw.includes("\t") && !raw.includes("\n"))) return;
+    e.preventDefault();
+
+    const pastedLines = raw
+      .split(/\r?\n/)
+      .map((l) => l.trimEnd())
+      .filter((l) => l.length > 0)
+      .map((l) => l.split(/\t|\|/).map((c) => c.trim()))
+      .filter((cols) => !(cols[0] === "분야" && cols[1] === "업무명"));
+
+    if (!pastedLines.length) return;
+
+    setRows((prev) => {
+      const neededRows = Math.max(prev.length, startR + pastedLines.length + 1);
+      const next: SheetRow[] = Array.from({ length: neededRows }, (_, idx) =>
+        prev[idx] ? ([...prev[idx]] as SheetRow) : ["", "", "", "", "", "", ""],
+      );
+
+      pastedLines.forEach((cols, rOffset) => {
+        const targetR = startR + rOffset;
+        // 만약 사용자가 B열 등 중간 셀이 아니라 단일 줄 전체(7열)를 붙여넣었다면 A열(0)부터 채움
+        const baseC = cols.length >= 4 && startC > 1 ? 0 : startC;
+        cols.forEach((val, cOffset) => {
+          const targetC = baseC + cOffset;
+          if (targetC < 7) {
+            next[targetR]![targetC] = val;
+          }
+        });
+      });
+      return next;
+    });
+  };
+
+  const validTasks = useMemo(() => sheetRowsToTasks(rows), [rows]);
+  const activeCoord = `${JEXCEL_COLUMNS[activeCell.c]?.col ?? "A"}${activeCell.r + 1}`;
+  const activeVal = rows[activeCell.r]?.[activeCell.c] ?? "";
+
+  const fillSampleRows = () => {
+    setRows([
+      [
+        "복리후생/총무",
+        "사내 동호회 하반기 지원금 정산",
+        "홍길동",
+        "2026-11-14",
+        "진행 중",
+        "영수증 취합 및 검토 중",
+        "",
+      ],
+      [
+        "자산",
+        "노후 사무용 의자 교체 수요조사",
+        "김민지",
+        "2026-11-18",
+        "대기",
+        "부서별 수량 파악 중",
+        "예산 추가 배정 필요",
+      ],
+      ...createEmptySheetRows(6),
+    ]);
+  };
+
+  return (
+    <ZenithCard className="overflow-hidden p-0">
+      {/* Jexcel Sheet Top Header */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-4 py-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex h-5 items-center rounded bg-emerald-600 px-1.5 text-[10px] font-bold text-white">
+              JEXCEL
+            </span>
+            <h3 className="text-sm font-bold">{title}</h3>
+          </div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">{subtitle}</p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={fillSampleRows}
+            className="rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
+          >
+            샘플 채우기
+          </button>
+          <button
+            type="button"
+            onClick={() => setRows((prev) => [...prev, ["", "", "", "", "", "", ""]])}
+            className="rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
+          >
+            + 행 추가
+          </button>
+          <button
+            type="button"
+            onClick={() => setRows(createEmptySheetRows(8))}
+            className="rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
+          >
+            비우기
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!validTasks.length) return;
+              onSubmitRows(validTasks);
+              setRows(createEmptySheetRows(8));
+            }}
+            disabled={validTasks.length === 0}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white shadow-2xs transition-colors hover:bg-emerald-700 cursor-pointer",
+              validTasks.length === 0 && "opacity-50 pointer-events-none",
+            )}
+          >
+            <span>반영하기 ({validTasks.length}건)</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Jexcel Formula / Coordinate Bar */}
+      <div className="flex items-center gap-2 border-b border-border bg-muted/50 px-3 py-1.5 text-xs">
+        <span className="inline-flex w-10 items-center justify-center rounded border border-border bg-background py-0.5 font-mono text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+          {activeCoord}
+        </span>
+        <span className="font-mono text-xs italic text-muted-foreground">fx</span>
+        <input
+          value={activeVal}
+          onChange={(e) => updateCell(activeCell.r, activeCell.c, e.target.value)}
+          placeholder="셀을 클릭하여 직접 입력하거나 엑셀에서 복사(Ctrl+C) 후 붙여넣기(Ctrl+V) 하세요"
+          className="flex-1 bg-transparent text-xs outline-none"
+        />
+      </div>
+
+      {/* Jexcel Spreadsheet Grid Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="bg-muted/80 text-muted-foreground select-none">
+              <th className="w-9 border-b border-r border-border py-1.5 text-center font-mono text-[11px] font-semibold">
+                #
+              </th>
+              {JEXCEL_COLUMNS.map((col, cIdx) => {
+                const isSelectedCol = activeCell.c === cIdx;
+                return (
+                  <th
+                    key={col.col}
+                    className={cn(
+                      "border-b border-r border-border last:border-r-0 px-2 py-1.5 text-center font-semibold transition-colors",
+                      col.width,
+                      isSelectedCol &&
+                        "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+                    )}
+                  >
+                    <span className="font-mono text-[10px] opacity-60 me-1">{col.col}</span>
+                    <span>{col.label}</span>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, rIdx) => {
+              const isSelectedRow = activeCell.r === rIdx;
+              return (
+                <tr key={rIdx} className="group">
+                  {/* Row Number Header */}
+                  <td
+                    className={cn(
+                      "border-b border-r border-border bg-muted/60 text-center font-mono text-[11px] text-muted-foreground select-none",
+                      isSelectedRow &&
+                        "bg-emerald-500/15 font-bold text-emerald-700 dark:text-emerald-300",
+                    )}
+                  >
+                    {rIdx + 1}
+                  </td>
+
+                  {/* 7 Editable Jexcel Cells */}
+                  {row.map((cellVal, cIdx) => {
+                    const isFocused = activeCell.r === rIdx && activeCell.c === cIdx;
+                    return (
+                      <td
+                        key={cIdx}
+                        className={cn(
+                          "relative border-b border-r border-border last:border-r-0 p-0 transition-colors",
+                          isFocused
+                            ? "bg-emerald-500/5 ring-2 ring-inset ring-emerald-600 z-10"
+                            : "bg-card hover:bg-muted/20",
+                        )}
+                      >
+                        <input
+                          value={cellVal}
+                          onFocus={() => setActiveCell({ r: rIdx, c: cIdx })}
+                          onChange={(e) => updateCell(rIdx, cIdx, e.target.value)}
+                          onPaste={(e) => handleCellPaste(e, rIdx, cIdx)}
+                          list={
+                            cIdx === 0
+                              ? "jexcel-fields-list"
+                              : cIdx === 4
+                                ? "jexcel-status-list"
+                                : undefined
+                          }
+                          placeholder={
+                            rIdx === 0
+                              ? cIdx === 0
+                                ? "복리후생/총무"
+                                : cIdx === 1
+                                  ? "업무명 입력/붙여넣기"
+                                  : cIdx === 2
+                                    ? "홍길동"
+                                    : cIdx === 3
+                                      ? "2026-11-15"
+                                      : cIdx === 4
+                                        ? "진행 중"
+                                        : ""
+                              : ""
+                          }
+                          className="h-8 w-full bg-transparent px-2 text-xs outline-none placeholder:text-muted-foreground/35"
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {/* Datalist suggestions for Field & Status columns */}
+        <datalist id="jexcel-fields-list">
+          {FIELDS.map((f) => (
+            <option key={f} value={f} />
+          ))}
+        </datalist>
+        <datalist id="jexcel-status-list">
+          {STATUSES.map((s) => (
+            <option key={s} value={s} />
+          ))}
+        </datalist>
+      </div>
     </ZenithCard>
   );
 }
@@ -2177,19 +2523,38 @@ function UploadView({
   onAdd: (t: Task[]) => void;
   onNavigate: (v: ViewId) => void;
 }) {
-  const [pasteText, setPasteText] = useState("");
+  const [curSheetRows, setCurSheetRows] = useState<SheetRow[]>(() =>
+    createEmptySheetRows(8),
+  );
+  const [prevSheetRows, setPrevSheetRows] = useState<SheetRow[]>(() =>
+    createEmptySheetRows(8),
+  );
 
   const run = async (files: File[], forcePrev: boolean) => {
     const { cur, prev } = await readFiles(files);
     const all = forcePrev ? [...cur, ...prev] : [...cur, ...prev];
-    if (all.length) onAdd(all);
-  };
-
-  const handlePasteSubmit = () => {
-    const parsed = parsePaste(pasteText);
-    if (parsed.length) {
-      onAdd(parsed);
-      setPasteText("");
+    if (all.length) {
+      onAdd(all);
+      // 파일 업로드 시 하단 엑셀표(Jexcel 시트)에도 함께 채워주어 바로 확인 가능하도록 연동
+      if (forcePrev) {
+        setPrevSheetRows((existing) => {
+          const nonEmpty = existing.filter((r) => r.some((c) => c.trim() !== ""));
+          return tasksToSheetRows([...sheetRowsToTasks(nonEmpty), ...all], 8);
+        });
+      } else {
+        if (cur.length) {
+          setCurSheetRows((existing) => {
+            const nonEmpty = existing.filter((r) => r.some((c) => c.trim() !== ""));
+            return tasksToSheetRows([...sheetRowsToTasks(nonEmpty), ...cur], 8);
+          });
+        }
+        if (prev.length) {
+          setPrevSheetRows((existing) => {
+            const nonEmpty = existing.filter((r) => r.some((c) => c.trim() !== ""));
+            return tasksToSheetRows([...sheetRowsToTasks(nonEmpty), ...prev], 8);
+          });
+        }
+      }
     }
   };
 
@@ -2199,7 +2564,7 @@ function UploadView({
         <div>
           <h1 className="text-2xl font-bold tracking-tight">1. 자료 올리기</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            팀원별 엑셀/CSV 업무일지를 드래그앤드롭하거나 표 데이터를 붙여넣어 일괄 등록합니다.
+            위쪽에는 팀원별 업무일지 문서를 여러 개 드래그앤드롭하고, 아래쪽 Jexcel 엑셀표에는 엑셀 내용을 바로 붙여넣거나 직접 입력할 수 있습니다.
           </p>
         </div>
         <button onClick={() => onNavigate("kanban")} className={btnOutline}>
@@ -2211,10 +2576,11 @@ function UploadView({
       <div className="flex items-center gap-2.5 rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
         <ShieldCheck className="h-4 w-4 shrink-0" />
         <span>
-          🔒 업로드된 업무 데이터는 브라우저에서 즉시 파싱되며 Supabase 데이터베이스와 동기화됩니다.
+          🔒 데이터는 외부 서버로 무단 전송되지 않으며 브라우저 및 지정된 Supabase 워크스페이스에서 안전하게 처리됩니다.
         </span>
       </div>
 
+      {/* 상단: 업무일지 / 지난주 보고서 문서 드래그앤드롭 (다중 파일 누적 등록 지원) */}
       <div className="grid gap-4 md:grid-cols-2">
         <DropZone
           title="이번 주 업무일지 (팀원별 파일 여러 개 가능)"
@@ -2228,38 +2594,23 @@ function UploadView({
         />
       </div>
 
-      <ZenithCard className="p-6">
-        <div className="flex items-center justify-between pb-3">
-          <div className="flex items-center gap-2">
-            <ClipboardPaste className="h-4 w-4 text-primary" />
-            <h2 className="text-base font-semibold">엑셀 / 표 텍스트 직접 붙여넣기</h2>
-          </div>
-          <span className="text-xs text-muted-foreground">
-            열 순서: 분야 · 업무명 · 담당자 · 기한 · 상태 · 추진현황 · 이슈
-          </span>
-        </div>
-        <textarea
-          rows={4}
-          value={pasteText}
-          onChange={(e) => setPasteText(e.target.value)}
-          placeholder={
-            "복리후생/총무\t사내 식당 메뉴 만족도 조사\t김민지\t2026-11-14\t진행 중\t설문 문항 확정\t\n자산\t노후 전산장비 교체 품의\t이준호\t2026-11-18\t대기\t견적 비교 중\t예산 협의 필요"
-          }
-          className={cn(inputCls, "font-mono text-xs")}
+      {/* 하단: Jexcel 스타일 인터랙티브 엑셀표 (위: 업무일지 문서 / 아래: 엑셀표 구조) */}
+      <div className="grid gap-4 xl:grid-cols-2">
+        <JexcelSheet
+          title="이번 주 업무일지 엑셀표 (직접 입력 / 엑셀 붙여넣기)"
+          subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 (엑셀에서 복사 후 셀에 Ctrl+V)"
+          rows={curSheetRows}
+          setRows={setCurSheetRows}
+          onSubmitRows={onAdd}
         />
-        <div className="mt-3 flex items-center justify-between">
-          <p className="text-xs text-muted-foreground">
-            탭(Tab), 쉼표(,), 파이프(|) 구분자를 자동으로 인식합니다.
-          </p>
-          <button
-            onClick={handlePasteSubmit}
-            disabled={!pasteText.trim()}
-            className={cn(btnPrimary, !pasteText.trim() && "opacity-50 pointer-events-none")}
-          >
-            붙여넣기 데이터 반영
-          </button>
-        </div>
-      </ZenithCard>
+        <JexcelSheet
+          title="지난주 보고서 엑셀표 (직접 입력 / 엑셀 붙여넣기)"
+          subtitle="열 순서: A분야 · B업무명 · C담당자 · D기한 · E상태 · F추진현황 · G이슈 (엑셀에서 복사 후 셀에 Ctrl+V)"
+          rows={prevSheetRows}
+          setRows={setPrevSheetRows}
+          onSubmitRows={onAdd}
+        />
+      </div>
     </div>
   );
 }
